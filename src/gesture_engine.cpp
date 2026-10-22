@@ -311,6 +311,9 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
 
         const bool wheel_in_use = wheel_used_;
 
+        // Сохраняем последний штрих, который оказался чуть короче основного
+        // порога: раньше он просто терялся при отпускании ПКМ.
+        recognizer_.finish();
         const std::string gesture = recognizer_.canonical();
         recognizer_.cancel();
 
