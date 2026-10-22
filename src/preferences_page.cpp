@@ -259,6 +259,7 @@ private:
     bool dirty_ = false;
     bool updating_ = false;
     bool diagnostics_logged_ = false;
+    bool list_diagnostics_logged_ = false;
 
     preferences_page_callback::ptr callback_;
     fb2k::CCoreDarkModeHooks dark_mode_;
@@ -1007,6 +1008,13 @@ void GesturePreferencesInstance::refresh_list() {
     if (count_label_ != nullptr) {
         const std::wstring text = L"Всего привязок: " + std::to_wstring(settings_.bindings.size());
         SetWindowTextW(count_label_, text.c_str());
+    }
+
+    if (!list_diagnostics_logged_) {
+        list_diagnostics_logged_ = true;
+        FB2K_console_formatter() << "Mouse Gesture Host: table rows " << static_cast<t_size>(rows_.size())
+                                 << " (items in list: " << static_cast<t_size>(ListView_GetItemCount(list_))
+                                 << "), bindings " << static_cast<t_size>(settings_.bindings.size());
     }
 
     update_buttons();
