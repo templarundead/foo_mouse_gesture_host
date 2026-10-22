@@ -225,8 +225,6 @@ private:
     }
 
     int scale(int value) const { return MulDiv(value, dpi_, 96); }
-    //! Ширина текста в пикселях текущим шрифтом страницы.
-    int text_width(const wchar_t* text) const;
 
     void invalidate() {
         if (hwnd_ != nullptr) InvalidateRect(hwnd_, nullptr, FALSE);
@@ -676,6 +674,8 @@ private:
     HWND make_checkbox(const wchar_t* text, int id);
 
     int scale(int value) const { return MulDiv(value, dpi_, 96); }
+    //! Ширина текста в пикселях шрифтом страницы (для расчёта ширины кнопок).
+    int text_width(const wchar_t* text) const;
 
     // --- данные ---
     GestureSettings settings_;
