@@ -149,7 +149,7 @@ bool GestureRecognizer::move(long x, long y) {
         turn_votes_ = 0;
     }
 
-    move_cardinal(x, y, std::max(4, threshold_px() * 3 / 4));
+    move_cardinal(x, y, (std::max)(4, threshold_px() * 3 / 4));
     return added;
 }
 
@@ -157,7 +157,7 @@ bool GestureRecognizer::finish() {
     if (!active_) return false;
     active_ = false;
 
-    move_cardinal(last_x_, last_y_, std::max(4, min_segment_px() * 3 / 4));
+    move_cardinal(last_x_, last_y_, (std::max)(4, min_segment_px() * 3 / 4));
 
     const double length = std::sqrt(accum_x_ * accum_x_ + accum_y_ * accum_y_);
     if (length < static_cast<double>(min_segment_px())) {
