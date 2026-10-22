@@ -591,12 +591,6 @@ LRESULT GestureListControl::window_proc(UINT msg, WPARAM wparam, LPARAM lparam) 
         default: break;
         }
 
-        // Пропускаем заголовки групп, чтобы выбор всегда попадал на привязку.
-        if (selected_ >= 0 && rows_ != nullptr &&
-            (*rows_)[static_cast<std::size_t>(selected_)].is_header) {
-            select_row(selected_ + (wparam == VK_UP ? -1 : 1), true);
-        }
-
         return 0;
     }
 
@@ -1310,18 +1304,14 @@ void GesturePreferencesInstance::apply_list_theme() {
     const bool dark = dark_mode_ ? true : false;
     const COLORREF list_background = dark ? RGB(32, 32, 32) : GetSysColor(COLOR_WINDOW);
 
-    // Строки рисуются вручную (WM_DRAWITEM), поэтому цвета текста темы
-    // больше не важны - важно только не дать теме закрасить фон.
-    // Строки рисуются вручную (WM_DRAWITEM), но цвета всё равно выставляем:
-    // если хост-тема вмешается в отрисовку, текст останется читаемым.
+    // Таблица - собственный контрол: он сам рисует строки, заголовки групп
+    // и выделение, поэтому просто передаём ему палитру текущей темы.
     list_control_.set_colors(list_background,
                              dark ? RGB(230, 230, 230) : GetSysColor(COLOR_WINDOWTEXT),
                              dark ? RGB(150, 150, 150) : GetSysColor(COLOR_GRAYTEXT),
                              dark ? RGB(0, 90, 158) : GetSysColor(COLOR_HIGHLIGHT),
                              dark ? RGB(255, 255, 255) : GetSysColor(COLOR_HIGHLIGHTTEXT),
                              dark ? RGB(45, 45, 45) : GetSysColor(COLOR_BTNFACE));
-
-    InvalidateRect(list_, nullptr, TRUE);
 }
 
 // ---------------------------------------------------------------------------
