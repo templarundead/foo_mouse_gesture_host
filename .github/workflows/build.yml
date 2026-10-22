@@ -17,8 +17,16 @@ env:
 
 jobs:
   build:
-    name: Release | x64
+    name: Release | ${{ matrix.architecture }}
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64
+            architecture: x64
+          - platform: Win32
+            architecture: x86
 
     steps:
       - name: Checkout
@@ -96,7 +104,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $arguments = @(
             'foo_mouse_gesture_host.sln', '/m', '/nologo', '/v:m',
-            '/p:Configuration=Release', '/p:Platform=x64',
+            '/p:Configuration=Release', '/p:Platform=${{ matrix.platform }}',
             '/flp:LogFile=build.log;Verbosity=normal;Encoding=UTF-8'
           )
           msbuild @arguments
@@ -125,7 +133,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: msbuild-log-${{ github.run_number }}
+          name: msbuild-log-${{ github.run_number }}-${{ matrix.architecture }}
           path: build.log
           if-no-files-found: ignore
 
@@ -140,29 +148,51 @@ jobs:
             'dev'
           }
 
-          $dll = Get-Item 'build\x64\Release\foo_mouse_gesture_host.dll' -ErrorAction Stop
+          $platform = '${{ matrix.platform }}'
+          $architecture = '${{ matrix.architecture }}'
+          $dll = Get-Item "build\$platform\Release\foo_mouse_gesture_host.dll" -ErrorAction Stop
           if ($dll.Length -lt 20000) {
             throw "Built DLL looks wrong: $($dll.Length) bytes"
           }
-          Write-Host "DLL: $($dll.FullName) ($($dll.Length) bytes)"
+
+          # IMAGE_FILE_MACHINE_I386 = 0x014c, IMAGE_FILE_MACHINE_AMD64 = 0x8664.
+          $image = [System.IO.File]::ReadAllBytes($dll.FullName)
+          $peOffset = [BitConverter]::ToInt32($image, 0x3C)
+          $machine = [BitConverter]::ToUInt16($image, $peOffset + 4)
+          $expectedMachine = if ($architecture -eq 'x86') { 0x14C } else { 0x8664 }
+          if ($machine -ne $expectedMachine) {
+            throw ("Unexpected DLL architecture: 0x{0:X4}; expected 0x{1:X4}" -f $machine, $expectedMachine)
+          }
+          Write-Host "DLL: $($dll.FullName) ($($dll.Length) bytes), machine 0x$($machine.ToString('X4'))"
 
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $package = "dist\foo_mouse_gesture_host-$version.fb2k-component"
+          $package = "dist\foo_mouse_gesture_host-$version-$architecture.fb2k-component"
           Compress-Archive -Path $dll.FullName -DestinationPath $package -Force
 
           Get-Item $package | Select-Object FullName, Length
-          "MGH_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "MGH_PACKAGE=$package" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: foo_mouse_gesture_host-${{ github.run_number }}
+          name: foo_mouse_gesture_host-${{ github.run_number }}-${{ matrix.architecture }}
           path: dist/*.fb2k-component
           if-no-files-found: error
 
-      - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
+  release:
+    name: Create GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-latest
+
+    steps:
+      - name: Download component packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: foo_mouse_gesture_host-${{ github.run_number }}-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish both architectures
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -170,9 +200,16 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
-          $package = (Resolve-Path $env:MGH_PACKAGE).Path
+          $packages = @(
+            Get-ChildItem 'dist' -Filter '*.fb2k-component' -Recurse |
+              Sort-Object Name |
+              ForEach-Object { $_.FullName }
+          )
+          if ($packages.Count -ne 2) {
+            throw "Expected x64 and x86 component packages, found $($packages.Count)"
+          }
 
-          gh release create $tag $package `
+          gh release create $tag $packages `
             --title "Mouse Gesture Host $tag" `
             --generate-notes `
             --verify-tag
