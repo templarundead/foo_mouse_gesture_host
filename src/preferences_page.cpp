@@ -260,6 +260,7 @@ private:
     bool dirty_ = false;
     bool updating_ = false;
     bool diagnostics_logged_ = false;
+    bool pending_state_notify_ = false;
     bool list_diagnostics_logged_ = false;
 
     preferences_page_callback::ptr callback_;
@@ -311,11 +312,12 @@ GesturePreferencesInstance::GesturePreferencesInstance(HWND parent,
         // Страховка: страница не должна открываться с пустой таблицей -
         // без строк нельзя ни выбрать привязку, ни понять, что происходит.
         settings_ = GestureConfig::defaults();
-        load_from_settings();
-        set_dirty(true);
-    } else {
-        load_from_settings();
+        // Хосту сообщим о несохранённых изменениях при первом показе страницы:
+        // дёргать callback из конструктора нельзя.
+        dirty_ = true;
+        pending_state_notify_ = true;
     }
+    load_from_settings();
 
     layout();
 
@@ -1426,6 +1428,11 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
             layout();
             // Меню могло быть недоступно в момент создания страницы.
             if (catalog_.empty()) refresh_command_list();
+
+            if (pending_state_notify_) {
+                pending_state_notify_ = false;
+                if (callback_.is_valid()) callback_->on_state_changed();
+            }
         }
         break;
 
