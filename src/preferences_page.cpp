@@ -968,7 +968,7 @@ void GesturePreferencesInstance::create_children() {
 
     up_label_ = make_static(L"up", SS_CENTER);
     down_label_ = make_static(L"down", SS_CENTER);
-    left_label_ = make_static(L"left", SS_RIGHT);
+    left_label_ = make_static(L"left", SS_LEFT);
     right_label_ = make_static(L"right", SS_LEFT);
     wheel_label_ = make_static(L"wheel", SS_LEFT);
     wheel_up_label_ = make_static(L"up", SS_CENTER);
@@ -1091,7 +1091,15 @@ void GesturePreferencesInstance::layout() {
     // Сетка 3x3: [←][BS][→] в одной строке, ↑ над BS, ↓ под BS.
     const int cell = scale(38);
     const int cell_gap = scale(4);
-    const int side_label = scale(44);                 // ширина подписей left/right
+
+    // Ширины подписей left/right берём по фактическому тексту: фиксированные
+    // 44 px сдвигали крестовину вправо и слово "left" не попадало на одну
+    // вертикаль с "wheel"/"rocker".
+    int side_left = text_width(L"left") + scale(2);
+    int side_right = text_width(L"right") + scale(2);
+    if (side_left < scale(20)) side_left = scale(20);
+    if (side_right < scale(24)) side_right = scale(24);
+    const int label_gap = scale(6);
 
     // Высота крестовины: подпись up + ↑ + ряд + ↓ + подпись down.
     const int pad_height = label_height + control_height + cell_gap + control_height + cell_gap +
@@ -1113,12 +1121,14 @@ void GesturePreferencesInstance::layout() {
                                     checks_height;
 
     // --- левая колонка: ровно по ширине крестовины --------------------------
-    // Крестовина стоит вплотную к левому краю, чтобы подпись "left" была
-    // на одной вертикали с "wheel" и "rocker" (все три - от margin).
-    const int pad_x = margin + side_label + cell_gap;
+    // Подпись "left" начинается ровно на margin - на одной вертикали с
+    // "wheel", "rocker" и "Stroke Length". Крестовина идёт сразу за ней,
+    // поэтому вся левая колонка получается минимально возможной, а форма -
+    // максимально широкой.
+    const int pad_x = margin + side_left + label_gap;
 
     // Правый край крестовины (с подписью "right") задаёт ширину левой колонки.
-    const int pad_right = pad_x + 3 * cell + 2 * cell_gap + cell_gap + side_label;
+    const int pad_right = pad_x + 3 * cell + 2 * cell_gap + label_gap + side_right;
     const int left_width = pad_right - margin;
 
     // Остальное отдаём форме: поля Gesture/Group/Command/Place получаются
@@ -1241,11 +1251,11 @@ void GesturePreferencesInstance::layout() {
     MoveWindow(dir_up_, up_x, y, cell, control_height, TRUE);
     y += control_height + cell_gap;
 
-    MoveWindow(left_label_, left_x - side_label - cell_gap, y, side_label, control_height, TRUE);
+    MoveWindow(left_label_, margin, y, side_left, control_height, TRUE);
     MoveWindow(dir_left_, left_x, y, cell, control_height, TRUE);
     MoveWindow(dir_backspace_, bs_x, y, cell, control_height, TRUE);
     MoveWindow(dir_right_, right_x, y, cell, control_height, TRUE);
-    MoveWindow(right_label_, right_x + cell + cell_gap, y, side_label, control_height, TRUE);
+    MoveWindow(right_label_, right_x + cell + label_gap, y, side_right, control_height, TRUE);
     y += control_height + cell_gap;
 
     MoveWindow(dir_down_, down_x, y, cell, control_height, TRUE);

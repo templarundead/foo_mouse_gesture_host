@@ -8,7 +8,7 @@
 
 DECLARE_COMPONENT_VERSION(
     "Mouse Gesture Host",
-    "1.1.2",
+    "1.1.3",
     "Mouse gestures for foobar2000 (v2.0+ / x64).\n"
     "\n"
     "Right-button drag gestures, diagonal strokes, wheel and rocker gestures.\n"
