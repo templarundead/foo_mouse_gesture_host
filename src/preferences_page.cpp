@@ -538,31 +538,155 @@ void GesturePreferencesInstance::layout() {
     const int gap = scale(6);
     const int label_height = scale(14);
     const int control_height = scale(24);
-
-    // --- левая колонка: крестовина, колесо, рокер, штрих, галочки ----------
     const int pad_cell = scale(38);
     const int pad_gap = scale(4);
-    const int pad_height = label_height * 2 + control_height * 3 + pad_gap * 2;
-    const int wheel_height = control_height + label_height + 1;
-    const int checks_height = scale(18) * 3 + scale(6) * 2;
-
-    const int left_height = pad_height + scale(16) + wheel_height + scale(8) + control_height +
-                            scale(14) + control_height + scale(12) + checks_height;
-
-    // --- правая колонка: четыре строки формы и ряд кнопок -------------------
-    const int row_step = control_height + scale(8);
-    const int right_height = row_step * 4 + scale(10) + control_height;
-
-    const int lower_height = left_height > right_height ? left_height : right_height;
-
     const int header_height = scale(18);
     const int list_top = margin + header_height + scale(2);
 
-    // Список забирает всё, что осталось после нижнего блока.
-    int list_height = height - (list_top + scale(12) + lower_height + margin);
-    const int min_list_height = scale(90);
-    if (list_height < min_list_height) list_height = min_list_height;
+    // Вертикальные отступы блока настроек. В "tight" варианте они уменьшены,
+    // чтобы содержимое помещалось на невысоких страницах (маленький экран,
+    // крупный системный шрифт).
+    struct Metrics {
+        int gap_wheel;
+        int gap_after_wheel;
+        int gap_rocker;
+        int gap_stroke;
+        int check_step;
+    };
 
+    const Metrics spacious = { scale(16), scale(8), scale(14), scale(12), scale(24) };
+    const Metrics compact  = { scale(10), scale(4), scale(8),  scale(6),  scale(20) };
+
+    const int row_step = control_height + scale(8);
+
+    // Один и тот же код и измеряет блок, и расставляет контролы - так разметка
+    // не может "разъехаться" с расчётом высоты.
+    auto place_lower = [&](int top, const Metrics& metrics, bool repaint) -> int {
+        const BOOL paint = repaint ? TRUE : FALSE;
+        int y = top;
+
+        // --- крестовина направлений ---
+        const int pad_x = margin;
+        const int bs_x = pad_x + 2 * (pad_cell + pad_gap);
+        const int pad_center = bs_x + pad_cell / 2;
+
+        MoveWindow(up_label_, pad_center - scale(30), y, scale(60), label_height, paint);
+        y += label_height;
+        MoveWindow(dir_up_, bs_x, y, pad_cell, control_height, paint);
+        y += control_height + pad_gap;
+
+        MoveWindow(left_label_, pad_x, y + scale(4), pad_cell, label_height, paint);
+        MoveWindow(dir_left_, pad_x + pad_cell + pad_gap, y, pad_cell, control_height, paint);
+        MoveWindow(dir_backspace_, bs_x, y, pad_cell, control_height, paint);
+        MoveWindow(dir_right_, bs_x + pad_cell + pad_gap, y, pad_cell, control_height, paint);
+        MoveWindow(right_label_, bs_x + 2 * (pad_cell + pad_gap), y + scale(4), pad_cell, label_height, paint);
+        y += control_height + pad_gap;
+
+        MoveWindow(dir_down_, bs_x, y, pad_cell, control_height, paint);
+        MoveWindow(down_label_, pad_center - scale(30), y + control_height + 1, scale(60), label_height, paint);
+        y += control_height + label_height + 1 + metrics.gap_wheel;
+
+        // --- колесо ---
+        MoveWindow(wheel_label_, margin, y + scale(3), scale(44), label_height, paint);
+        MoveWindow(wheel_up_, margin + scale(48), y, scale(28), control_height, paint);
+        MoveWindow(wheel_down_, margin + scale(80), y, scale(28), control_height, paint);
+        MoveWindow(wheel_up_label_, margin + scale(48), y + control_height + 1, scale(28), label_height, paint);
+        MoveWindow(wheel_down_label_, margin + scale(80), y + control_height + 1, scale(28), label_height, paint);
+        y += control_height + label_height + 1 + metrics.gap_after_wheel;
+
+        // --- рокер ---
+        MoveWindow(rocker_label_, margin, y + scale(3), scale(44), label_height, paint);
+        MoveWindow(rocker_rl_, margin + scale(48), y, scale(48), control_height, paint);
+        MoveWindow(rocker_lr_, margin + scale(100), y, scale(48), control_height, paint);
+        y += control_height + metrics.gap_rocker;
+
+        // --- длина штриха ---
+        MoveWindow(stroke_label_, margin, y + scale(3), scale(96), label_height, paint);
+        MoveWindow(stroke_edit_, margin + scale(98), y, scale(56), control_height - scale(2), paint);
+        MoveWindow(stroke_spin_, margin + scale(155), y, scale(16), control_height - scale(2), paint);
+        y += control_height + metrics.gap_stroke;
+
+        // --- галочки (в столбик: на узкой странице они больше не наезжают друг на друга) ---
+        MoveWindow(disable_check_, margin, y, scale(260), scale(18), paint);
+        MoveWindow(alphabet_check_, margin, y + metrics.check_step, scale(300), scale(18), paint);
+        MoveWindow(first_only_check_, margin, y + 2 * metrics.check_step, scale(300), scale(18), paint);
+        y += scale(18) + 2 * metrics.check_step;
+
+        // --- правая колонка: редактор привязки ---
+        int left_width = width * 42 / 100;
+        left_width = clamp_int(left_width, scale(250), scale(380));
+
+        const int form_x = margin + left_width + scale(16);
+        const int form_width = width - margin - form_x;
+
+        int label_width = scale(84);
+        int editor_width = form_width - label_width;
+        if (editor_width < scale(140)) {
+            label_width = scale(60);
+            editor_width = form_width - label_width;
+        }
+        if (editor_width < scale(80)) editor_width = scale(80);
+        const int editor_x = form_x + label_width;
+
+        MoveWindow(gesture_label_, form_x, top + scale(4), label_width, label_height, paint);
+        MoveWindow(gesture_edit_, editor_x, top, editor_width, control_height, paint);
+
+        MoveWindow(group_label_, form_x, top + row_step + scale(4), label_width, label_height, paint);
+        SetWindowPos(group_combo_, nullptr, editor_x, top + row_step, editor_width, scale(240),
+                     SWP_NOZORDER | SWP_NOACTIVATE | (repaint ? 0 : SWP_NOREDRAW));
+
+        MoveWindow(command_label_, form_x, top + 2 * row_step + scale(4), label_width, label_height, paint);
+        SetWindowPos(command_combo_, nullptr, editor_x, top + 2 * row_step, editor_width, scale(240),
+                     SWP_NOZORDER | SWP_NOACTIVATE | (repaint ? 0 : SWP_NOREDRAW));
+
+        MoveWindow(place_label_, form_x, top + 3 * row_step + scale(4), label_width, label_height, paint);
+        SetWindowPos(place_combo_, nullptr, editor_x, top + 3 * row_step,
+                     editor_width < scale(190) ? editor_width : scale(190), scale(160),
+                     SWP_NOZORDER | SWP_NOACTIVATE | (repaint ? 0 : SWP_NOREDRAW));
+
+        // --- кнопки управления таблицей ---
+        const int buttons_y = top + 4 * row_step + scale(10);
+        const int base_widths[5] = { 90, 66, 66, 54, 54 };
+        HWND buttons[5] = { add_button_, update_button_, delete_button_, move_up_button_, move_down_button_ };
+
+        int total_width = 4 * gap;
+        for (const int base : base_widths) total_width += scale(base);
+
+        const double factor = form_width < total_width
+            ? static_cast<double>(form_width) / static_cast<double>(total_width)
+            : 1.0;
+
+        int x = form_x;
+        for (int i = 0; i < 5; ++i) {
+            const int button_width = static_cast<int>(scale(base_widths[i]) * factor);
+            MoveWindow(buttons[i], x, buttons_y, button_width, control_height, paint);
+            x += button_width + gap;
+        }
+
+        const int right_bottom = buttons_y + control_height;
+        return y > right_bottom ? y : right_bottom;
+    };
+
+    // Измеряем блок сначала с обычными отступами; если не помещается - сжимаем.
+    const int min_list_height = scale(90);
+
+    const Metrics* metrics = &spacious;
+    int lower_bottom = place_lower(0, *metrics, false);
+    int top = height - margin - lower_bottom;
+
+    if (top - scale(12) - list_top < min_list_height) {
+        metrics = &compact;
+        lower_bottom = place_lower(0, *metrics, false);
+        top = height - margin - lower_bottom;
+        if (top - scale(12) - list_top < min_list_height) {
+            // Совсем мало места: список ужимается до минимума.
+            top = list_top + scale(12) + min_list_height;
+        }
+    }
+
+    const int list_height = top - scale(12) - list_top;
+
+    // --- таблица привязок ---
     const int list_width = width - 2 * margin;
     MoveWindow(list_, margin, list_top, list_width, list_height, TRUE);
 
@@ -585,115 +709,16 @@ void GesturePreferencesInstance::layout() {
     ListView_SetColumnWidth(list_, 1, column_command);
     ListView_SetColumnWidth(list_, 2, column_place);
 
-    // Шапка таблицы: обычные Static-контролы над ListView.
+    // Заголовки таблицы - обычные Static-контролы (заголовок ListView
+    // в тёмной теме остаётся белым на белом).
     const int header_x = margin + scale(2);
     MoveWindow(header_gesture_, header_x, margin, column_gesture, header_height, TRUE);
     MoveWindow(header_command_, header_x + column_gesture, margin, column_command, header_height, TRUE);
     MoveWindow(header_place_, header_x + column_gesture + column_command, margin,
                width - margin - (header_x + column_gesture + column_command), header_height, TRUE);
 
-    const int top = list_top + list_height + scale(12);
-
-    // Ширина левой колонки: крестовина + подписи, но не больше 380 единиц.
-    int left_width = width * 42 / 100;
-    left_width = clamp_int(left_width, scale(250), scale(380));
-
-    // --- крестовина направлений --------------------------------------------
-    const int pad_x = margin;
-    const int bs_x = pad_x + 2 * (pad_cell + pad_gap);
-    const int pad_center = bs_x + pad_cell / 2;
-
-    int y = top;
-    MoveWindow(up_label_, pad_center - scale(30), y, scale(60), label_height, TRUE);
-    y += label_height;
-    MoveWindow(dir_up_, bs_x, y, pad_cell, control_height, TRUE);
-    y += control_height + pad_gap;
-
-    MoveWindow(left_label_, pad_x, y + scale(4), pad_cell, label_height, TRUE);
-    MoveWindow(dir_left_, pad_x + pad_cell + pad_gap, y, pad_cell, control_height, TRUE);
-    MoveWindow(dir_backspace_, bs_x, y, pad_cell, control_height, TRUE);
-    MoveWindow(dir_right_, bs_x + pad_cell + pad_gap, y, pad_cell, control_height, TRUE);
-    MoveWindow(right_label_, bs_x + 2 * (pad_cell + pad_gap), y + scale(4), pad_cell, label_height, TRUE);
-    y += control_height + pad_gap;
-
-    MoveWindow(dir_down_, bs_x, y, pad_cell, control_height, TRUE);
-    MoveWindow(down_label_, pad_center - scale(30), y + control_height + 1, scale(60), label_height, TRUE);
-    y += control_height + label_height + 1 + scale(16);
-
-    // --- колесо -------------------------------------------------------------
-    MoveWindow(wheel_label_, margin, y + scale(3), scale(44), label_height, TRUE);
-    MoveWindow(wheel_up_, margin + scale(48), y, scale(28), control_height, TRUE);
-    MoveWindow(wheel_down_, margin + scale(80), y, scale(28), control_height, TRUE);
-    MoveWindow(wheel_up_label_, margin + scale(48), y + control_height + 1, scale(28), label_height, TRUE);
-    MoveWindow(wheel_down_label_, margin + scale(80), y + control_height + 1, scale(28), label_height, TRUE);
-    y += wheel_height + scale(8);
-
-    // --- рокер --------------------------------------------------------------
-    MoveWindow(rocker_label_, margin, y + scale(3), scale(44), label_height, TRUE);
-    MoveWindow(rocker_rl_, margin + scale(48), y, scale(48), control_height, TRUE);
-    MoveWindow(rocker_lr_, margin + scale(100), y, scale(48), control_height, TRUE);
-    y += control_height + scale(14);
-
-    // --- длина штриха -------------------------------------------------------
-    MoveWindow(stroke_label_, margin, y + scale(3), scale(96), label_height, TRUE);
-    MoveWindow(stroke_edit_, margin + scale(98), y, scale(56), control_height - scale(2), TRUE);
-    MoveWindow(stroke_spin_, margin + scale(155), y, scale(16), control_height - scale(2), TRUE);
-    y += control_height + scale(12);
-
-    // --- галочки ------------------------------------------------------------
-    const int check_width = left_width;
-    MoveWindow(disable_check_, margin, y, check_width, scale(18), TRUE);
-    MoveWindow(alphabet_check_, margin, y + scale(24), check_width, scale(18), TRUE);
-    MoveWindow(first_only_check_, margin, y + scale(48), check_width, scale(18), TRUE);
-
-    // --- правая колонка: редактор привязки ---------------------------------
-    const int form_x = margin + left_width + scale(16);
-    const int form_width = width - margin - form_x;
-
-    int label_width = scale(84);
-    int editor_width = form_width - label_width;
-    if (editor_width < scale(140)) {
-        label_width = scale(60);
-        editor_width = form_width - label_width;
-    }
-    if (editor_width < scale(80)) editor_width = scale(80);
-
-    const int editor_x = form_x + label_width;
-
-    MoveWindow(gesture_label_, form_x, top + scale(4), label_width, label_height, TRUE);
-    MoveWindow(gesture_edit_, editor_x, top, editor_width, control_height, TRUE);
-
-    MoveWindow(group_label_, form_x, top + row_step + scale(4), label_width, label_height, TRUE);
-    SetWindowPos(group_combo_, nullptr, editor_x, top + row_step, editor_width, scale(240),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-
-    MoveWindow(command_label_, form_x, top + 2 * row_step + scale(4), label_width, label_height, TRUE);
-    SetWindowPos(command_combo_, nullptr, editor_x, top + 2 * row_step, editor_width, scale(240),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-
-    MoveWindow(place_label_, form_x, top + 3 * row_step + scale(4), label_width, label_height, TRUE);
-    SetWindowPos(place_combo_, nullptr, editor_x, top + 3 * row_step,
-                 editor_width < scale(190) ? editor_width : scale(190), scale(160),
-                 SWP_NOZORDER | SWP_NOACTIVATE);
-
-    // --- кнопки управления таблицей ----------------------------------------
-    const int buttons_y = top + 4 * row_step + scale(10);
-    const int base_widths[5] = { 90, 66, 66, 54, 54 };
-    HWND buttons[5] = { add_button_, update_button_, delete_button_, move_up_button_, move_down_button_ };
-
-    int total_width = 4 * gap;
-    for (const int base : base_widths) total_width += scale(base);
-
-    const double factor = form_width < total_width
-        ? static_cast<double>(form_width) / static_cast<double>(total_width)
-        : 1.0;
-
-    int x = form_x;
-    for (int i = 0; i < 5; ++i) {
-        const int button_width = static_cast<int>(scale(base_widths[i]) * factor);
-        MoveWindow(buttons[i], x, buttons_y, button_width, control_height, TRUE);
-        x += button_width + gap;
-    }
+    // Финальная расстановка нижнего блока на вычисленном месте.
+    place_lower(top, *metrics, true);
 }
 
 // ---------------------------------------------------------------------------
