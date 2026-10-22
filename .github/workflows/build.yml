@@ -122,6 +122,12 @@ jobs:
             Get-Content build.log -Tail 20 | ForEach-Object { Write-Host "::error title=MSBuild tail::$_" }
           }
 
+          # Полный лог в job summary: его можно прочитать через API check-run.
+          '### MSBuild log' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Get-Content build.log | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
       - name: Upload MSBuild log
         if: always()
         uses: actions/upload-artifact@v4
