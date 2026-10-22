@@ -35,6 +35,12 @@ bool token_is_directional(Token token);
 //! Склейка звеньев в каноническую строку через пробел.
 std::string join_tokens(const std::vector<Token>& tokens);
 
+//! Варианты для сопоставления с привязками. Первым всегда идёт точный жест.
+//! Дополнительные варианты убирают переходные диагонали между основными
+//! направлениями и необязательный замыкающий поворот. Это позволяет нарисовать
+//! "D R U L" с округлыми углами, не теряя поддержки точных диагональных жестов.
+std::vector<std::string> gesture_match_candidates(const std::vector<Token>& tokens);
+
 //! Разбор строки жеста. Пустая строка - корректный жест.
 bool parse_gesture(std::string_view gesture, std::vector<Token>& out);
 

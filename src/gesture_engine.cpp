@@ -315,16 +315,19 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
         // порога: раньше он просто терялся при отпускании ПКМ.
         recognizer_.finish();
         const std::string gesture = recognizer_.canonical();
+        const auto match_candidates = recognizer_.match_candidates();
         recognizer_.cancel();
 
         bool executed = false;
-        if (!gesture.empty() && has_binding(gesture)) {
-            queue_gesture(gesture);
-            executed = true;
-            swallow = true;
-        } else if (!gesture.empty()) {
-            report_unmatched_gesture(gesture);
+        for (const auto& candidate : match_candidates) {
+            if (!candidate.empty() && has_binding(candidate)) {
+                queue_gesture(candidate);
+                executed = true;
+                swallow = true;
+                break;
+            }
         }
+        if (!executed && !gesture.empty()) report_unmatched_gesture(gesture);
 
         // ПКМ была подавлена. Если это был обычный щелчок (без сдвига), а жест
         // не сработал - возвращаем foobar2000 правый клик, чтобы открылось
