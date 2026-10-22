@@ -105,13 +105,19 @@ GestureSettings GestureConfig::load_from_storage() const {
     settings.bindings = deserialize(std::string_view(stored.c_str(), stored.length()));
 #endif
 
-    // Первый запуск (или пустое хранилище, оставшееся от прежних версий,
-    // где таблица могла сохраниться пустой) - показываем стандартные привязки,
-    // чтобы страница настроек не выглядела сломанной.
-    const bool never_saved = (flags & flag_initialized) == 0;
-    const bool stored_empty = g_cfg_bindings_is_empty();
-    if (never_saved || stored_empty) {
+    // Пустая или нечитаемая таблица привязок - это всегда "ещё не настроено":
+    // показываем стандартные привязки, чтобы компонент работал сразу после
+    // установки, а страница настроек не выглядела сломанной. Полностью
+    // отключить жесты можно галочкой "Disable mouse gesture".
+    if (settings.bindings.empty()) {
         settings.bindings = defaults().bindings;
+
+        if (!g_cfg_bindings_is_empty()) {
+            // В хранилище что-то есть, но разобрать не удалось - покажем это
+            // в консоли, чтобы причина не потерялась.
+            FB2K_console_formatter()
+                << "Mouse Gesture Host: stored gesture table could not be parsed, defaults restored";
+        }
     }
 
     return settings;
