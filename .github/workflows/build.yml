@@ -91,17 +91,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $solutionDir = (Get-Location).Path + '\'
           $arguments = @(
-            'foo_mouse_gesture_host.sln', '/m', '/nologo', '/v:m',
+            'foo_mouse_gesture_host.vcxproj', '/m', '/nologo', '/v:m',
             '/p:Configuration=Release', '/p:Platform=x64',
+            "/p:SolutionDir=$solutionDir",
             '/flp:LogFile=build.log;Verbosity=normal;Encoding=UTF-8'
           )
           msbuild @arguments
           if ($LASTEXITCODE -ne 0) { throw "MSBuild failed with exit code $LASTEXITCODE" }
-
-          $dll = 'build\x64\Release\foo_mouse_gesture_host.dll'
-          if (-not (Test-Path $dll)) { throw "Expected component DLL was not produced: $dll" }
-          Get-Item $dll | Select-Object FullName, Length
 
       - name: Report build errors
         if: failure()
@@ -120,14 +118,10 @@ jobs:
           }
 
           # Полный лог по частям: артефакты Azure недоступны, а check-run annotations читаются API.
-          $text = $lines -join "`n"
-          $chunkSize = 3000
-          $parts = [Math]::Ceiling($text.Length / $chunkSize)
-          for ($i = 0; $i -lt [Math]::Min($parts, 14); $i++) {
-            $offset = $i * $chunkSize
-            $len = [Math]::Min($chunkSize, $text.Length - $offset)
-            Write-Host "::error title=LogPart$($i + 1)of$parts::$($text.Substring($offset, $len))"
-          }
+          $linkLines = ($lines | Select-String -Pattern 'pfc\.lib|foobar2000_SDK\.lib|Link:|AdditionalDependencies' |
+            ForEach-Object { $_.Line.Trim() }) -join ' | '
+          if ($linkLines.Length -gt 3500) { $linkLines = $linkLines.Substring(0, 3500) }
+          Write-Host "::error title=LinkInputs::$linkLines"
 
       - name: Upload MSBuild log
         if: always()
