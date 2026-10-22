@@ -806,7 +806,11 @@ void GesturePreferencesInstance::apply_list_theme() {
 
     // Строки рисуются вручную (WM_DRAWITEM), поэтому цвета текста темы
     // больше не важны - важно только не дать теме закрасить фон.
+    // Строки рисуются вручную (WM_DRAWITEM), но цвета всё равно выставляем:
+    // если хост-тема вмешается в отрисовку, текст останется читаемым.
     ListView_SetBkColor(list_, list_background);
+    ListView_SetTextBkColor(list_, list_background);
+    ListView_SetTextColor(list_, dark ? RGB(230, 230, 230) : GetSysColor(COLOR_WINDOWTEXT));
 
     if (dark) {
         SetWindowTheme(list_, L"", L"");
@@ -839,12 +843,12 @@ void GesturePreferencesInstance::load_from_settings() {
 }
 
 void GesturePreferencesInstance::measure_list_row(MEASUREITEMSTRUCT& item) const {
-    const bool header = item.itemID < rows_.size() && rows_[static_cast<std::size_t>(item.itemID)].is_header;
-
+    // WM_MEASUREITEM приходит до заполнения rows_, поэтому высоту строки
+    // считаем только по шрифтам, без обращения к модели.
     HDC dc = GetDC(hwnd_);
     int text_height = scale(16);
     if (dc != nullptr) {
-        HGDIOBJ old_font = SelectObject(dc, header && header_font_ != nullptr ? header_font_ : font_);
+        HGDIOBJ old_font = SelectObject(dc, font_);
         TEXTMETRICW metrics = {};
         if (GetTextMetricsW(dc, &metrics)) {
             text_height = metrics.tmHeight;
@@ -853,7 +857,7 @@ void GesturePreferencesInstance::measure_list_row(MEASUREITEMSTRUCT& item) const
         ReleaseDC(hwnd_, dc);
     }
 
-    item.itemHeight = static_cast<UINT>(text_height + (header ? scale(14) : scale(8)));
+    item.itemHeight = static_cast<UINT>(text_height + scale(9));
 }
 
 void GesturePreferencesInstance::draw_list_row(const DRAWITEMSTRUCT& item) {
@@ -1149,6 +1153,10 @@ void GesturePreferencesInstance::on_add() {
 
     const int last = static_cast<int>(settings_.bindings.size()) - 1;
     select_binding(last);
+
+    FB2K_console_formatter() << "Mouse Gesture Host: added gesture \"" << binding.gesture.c_str()
+                             << "\" -> " << binding.command_path.c_str()
+                             << " (" << static_cast<t_size>(settings_.bindings.size()) << " total)";
 
     update_buttons();
     set_dirty(true);
