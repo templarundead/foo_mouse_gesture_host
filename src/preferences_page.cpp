@@ -467,11 +467,12 @@ void GestureListControl::paint(HDC target, const RECT& client) {
 
     int y = -scroll_;
     if (rows_ != nullptr) {
-        for (const auto& row : *rows_) {
+        for (std::size_t i = 0; i < rows_->size(); ++i) {
+            const GestureListRow& row = (*rows_)[i];
             const int height = row_height(row.is_header);
             if (y + height >= 0 && y < client.bottom) {
                 RECT row_rect = { 0, y, client.right, y + height };
-                draw_row(memory_dc, row_rect, row, static_cast<int>(&row - rows_->data()) == selected_);
+                draw_row(memory_dc, row_rect, row, static_cast<int>(i) == selected_);
             }
             y += height;
         }
@@ -1091,7 +1092,10 @@ void GesturePreferencesInstance::layout() {
     const int rocker_width = scale(48) + gap + scale(48);
     const int rocker_height = control_height;
 
-    const int checks_rows = 2;                                       // два ряда галочек максимум
+    // На широкой странице вторая и третья галочки стоят в одном ряду,
+    // на узкой - в столбик (тогда рядов три).
+    const bool two_columns = (width - 2 * margin) >= scale(720);
+    const int checks_rows = two_columns ? 2 : 3;
     const int checks_height = scale(18) * checks_rows + scale(6) * (checks_rows - 1);
 
     // Левая колонка: крестовина + wheel + rocker + stroke + галочки.
@@ -1209,7 +1213,6 @@ void GesturePreferencesInstance::layout() {
 
     // --- галочки ------------------------------------------------------------
     const int checks_width = width - 2 * margin;
-    const bool two_columns = checks_width >= scale(720);
 
     MoveWindow(disable_check_, margin, y, scale(280), scale(18), TRUE);
     MoveWindow(alphabet_check_, margin, y + scale(24), scale(300), scale(18), TRUE);
