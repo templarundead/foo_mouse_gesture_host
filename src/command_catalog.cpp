@@ -22,6 +22,23 @@ const MainMenuRoot kMainMenuRoots[] = {
     { &mainmenu_groups::help,     "Help" },
 };
 
+//! Алфавитный порядок для отображаемых путей команд. Сравнение через Windows
+//! учитывает язык пользователя и нечувствительно к регистру; исходный путь
+//! используется как детерминированный тайбрейк и при ошибке преобразования.
+bool command_path_less(const CatalogEntry& left, const CatalogEntry& right) {
+    const std::wstring left_text = wide_from_utf8(left.path);
+    const std::wstring right_text = wide_from_utf8(right.path);
+    const int comparison = CompareStringW(LOCALE_USER_DEFAULT, NORM_IGNORECASE,
+                                         left_text.c_str(), -1, right_text.c_str(), -1);
+    if (comparison == CSTR_LESS_THAN) return true;
+    if (comparison == CSTR_GREATER_THAN) return false;
+    return left.path < right.path;
+}
+
+void sort_command_catalog(std::vector<CatalogEntry>& entries) {
+    std::stable_sort(entries.begin(), entries.end(), command_path_less);
+}
+
 bool read_menu_item(HMENU menu, int index, MENUITEMINFOW& info, std::string& text) {
     wchar_t buffer[512] = {};
     info = {};
@@ -269,8 +286,11 @@ std::string path_leaf(std::string_view path) {
 
 std::vector<CatalogEntry> list_commands(std::string_view group_id) {
     try {
-        if (group_id == "main") return list_main_menu();
-        return list_context_menu(std::string(group_id));
+        auto entries = group_id == "main"
+            ? list_main_menu()
+            : list_context_menu(std::string(group_id));
+        sort_command_catalog(entries);
+        return entries;
     } catch (...) {
         return {};
     }
