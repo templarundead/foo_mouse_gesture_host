@@ -832,8 +832,19 @@ void GesturePreferencesInstance::refresh_list() {
         ListView_SetItemState(list_, previous, LVIS_SELECTED | LVIS_FOCUSED,
                               LVIS_SELECTED | LVIS_FOCUSED);
     }
-    update_buttons();
     updating_ = was_updating;
+
+    // Страховка: если group view включён, но строки не отрисовались
+    // (встречается на некоторых сборках comctl32), перерисовываем плоским списком.
+    if (groups_enabled_ && !settings_.bindings.empty() && ListView_GetItemCount(list_) == 0) {
+        groups_enabled_ = false;
+        ListView_EnableGroupView(list_, FALSE);
+        ListView_RemoveAllGroups(list_);
+        refresh_list();
+        return;
+    }
+
+    update_buttons();
 }
 
 void GesturePreferencesInstance::refresh_gesture_text() {
@@ -846,6 +857,11 @@ void GesturePreferencesInstance::refresh_command_list() {
 
     const std::string group_id = current_group_id();
     catalog_ = list_commands(group_id);
+
+    if (catalog_.empty() && group_id == "main") {
+        FB2K_console_formatter() << "Mouse Gesture Host: the main menu returned no commands "
+                                    "(menu not ready?)";
+    }
 
     ComboBox_ResetContent(command_combo_);
     if (catalog_.empty()) {
