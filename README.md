@@ -1,6 +1,6 @@
 # foo_mouse_gesture_host
 
-Компонент **жестов мыши** для [foobar2000](https://www.foobar2000.org/) v2.0 / v2.1+ (x64).
+Компонент **жестов мыши** для [foobar2000](https://www.foobar2000.org/) v2.0 / v2.1+ (x64 / x86).
 
 Держите правую кнопку мыши и рисуйте жест — компонент распознаёт направление
 движения (включая диагонали и длинные цепочки), а также **колесо** и **rocker**-жесты
@@ -50,7 +50,7 @@
 | Параметр | Значение |
 |---|---|
 | foobar2000 | v2.0 и новее (включая v2.1 / v2.2x) |
-| Архитектура | **x64** |
+| Архитектура | **x64** и **x86 (Win32)** — выбирайте пакет по архитектуре foobar2000 |
 | SDK | foobar2000 SDK 2023-09-23 (эпоха v2.0) |
 | Сборка | MSVC 2022 (v143), C++20 |
 | Интерфейс | Default UI, Columns UI и любые сторонние панели |
@@ -65,13 +65,15 @@
 ### Из релиза (рекомендуется)
 
 1. Откройте раздел **Releases** этого репозитория.
-2. Скачайте файл `foo_mouse_gesture_host-<версия>.fb2k-component`.
+2. Скачайте `foo_mouse_gesture_host-<версия>-x64.fb2k-component` для
+   64-битного foobar2000 либо `foo_mouse_gesture_host-<версия>-x86.fb2k-component`
+   для 32-битного.
 3. Дважды щёлкните по файлу — foobar2000 сам предложит установить компонент,
    либо перетащите его в окно foobar2000.
 
 ### Вручную
 
-1. Скачайте `.fb2k-component` (это обычный ZIP-архив).
+1. Скачайте `.fb2k-component` нужной архитектуры (это обычный ZIP-архив).
 2. Распакуйте `foo_mouse_gesture_host.dll` в папку `components` вашего профиля:
    - установка: `%APPDATA%\foobar2000-v2\components\`
    - portable: `<папка foobar2000>\components\`
@@ -229,7 +231,7 @@ src/
 
 ### Требования
 
-- Windows 10/11 x64
+- Windows 10/11
 - Visual Studio 2022 с рабочей нагрузкой *Desktop development with C++*
 - PowerShell 5.1+ (для скачивания SDK)
 
@@ -242,14 +244,19 @@ cd foo_mouse_gesture_host
 # Скачать официальный foobar2000 SDK (2023-09-23) в .\sdk
 powershell -ExecutionPolicy Bypass -File tools\fetch-sdk.ps1
 
-# Собрать Release | x64
+# Собрать 64-битную версию (Release | x64)
 msbuild foo_mouse_gesture_host.sln /m /p:Configuration=Release /p:Platform=x64
+
+# Собрать 32-битную версию (Release | Win32)
+msbuild foo_mouse_gesture_host.sln /m /p:Configuration=Release /p:Platform=Win32
 ```
 
-Результат: `build\x64\Release\foo_mouse_gesture_host.dll`.
+Результат:
+- x64: `build\x64\Release\foo_mouse_gesture_host.dll`;
+- x86: `build\Win32\Release\foo_mouse_gesture_host.dll`.
 
 Можно открыть `foo_mouse_gesture_host.sln` и в Visual Studio — в решении
-настроены конфигурации `Debug|x64` и `Release|x64` (целевая платформа — x64).
+настроены конфигурации `Debug` / `Release` для платформ `x64` и `Win32`.
 
 Решение включает в себя проекты SDK (`pfc`, `foobar2000_SDK`,
 `foobar2000_component_client`), поэтому **перед первым открытием .sln**
@@ -263,7 +270,8 @@ msbuild foo_mouse_gesture_host.sln /m /p:Configuration=Release /p:Platform=x64
 - `PlatformToolset` = `v143`, `LanguageStandard` = `stdcpp20`, `/utf-8`
 - Include-пути: `sdk`, `sdk\foobar2000`, `src`
 - Линкуются `pfc`, `foobar2000_SDK`, `foobar2000_component_client`
-  и предсобранный `sdk\foobar2000\shared\shared-x64.lib`
+  и предсобранный `shared-x64.lib` / `shared-Win32.lib` из
+  `sdk\foobar2000\shared\` (выбирается по платформе сборки)
 - `comctl32.lib`, `uxtheme.lib`, `shlwapi.lib` — ListView/UpDown, тёмная тема,
   `StrCmpLogicalW` из состава SDK
 
@@ -277,11 +285,12 @@ msbuild foo_mouse_gesture_host.sln /m /p:Configuration=Release /p:Platform=x64
    запуске и при push тега `v*`;
 2. скачивает **официальный** SDK (`https://www.foobar2000.org/downloads/SDK-2023-09-23.7z`),
    распаковывает его в `sdk/`;
-3. собирает `Release | x64` через MSBuild (`foo_mouse_gesture_host.sln`);
-4. упаковывает DLL в `foo_mouse_gesture_host-<версия>.fb2k-component`
-   (это ZIP-архив) и загружает как artifact;
-5. при push тега вида `v1.0.0` создаёт GitHub Release и прикрепляет к нему
-   готовый `.fb2k-component`.
+3. параллельно собирает `Release | x64` и `Release | Win32` через MSBuild;
+4. упаковывает каждую DLL в отдельный
+   `foo_mouse_gesture_host-<версия>-<x64|x86>.fb2k-component` и загружает
+   оба пакета как artifacts;
+5. при push тега вида `v1.0.0` ждёт успешной сборки обеих архитектур,
+   создаёт GitHub Release и прикрепляет к нему оба `.fb2k-component`.
 
 Чтобы выпустить новую версию:
 
@@ -335,9 +344,6 @@ Mouse Gesture Host: gesture "D R U L" has no binding
 
 ## Ограничения
 
-- Компонент только для **x64** (foobar2000 v2.0+). Для 32-битной сборки
-  добавьте конфигурацию `Release|Win32` — исходный код платформонезависим
-  в рамках Win32.
 - Жесты работают только над окном foobar2000 (включая его дочерние окна),
   но не над другими приложениями.
 - Если пункт меню переименован (например, при смене языка интерфейса),
