@@ -9,7 +9,7 @@ constexpr GUID guid_cfg_stroke_length = { 0x3f2b6c1a, 0x9d4e, 0x4b7a, { 0x9c, 0x
 constexpr GUID guid_cfg_flags         = { 0x8a51d3c2, 0x7e6b, 0x4c19, { 0xb2, 0x33, 0x6a, 0x0f, 0x5d, 0x91, 0xc4, 0x02 } };
 constexpr GUID guid_cfg_bindings      = { 0x1d7e4f60, 0x2b8a, 0x4d3e, { 0xa5, 0x66, 0x1c, 0x93, 0x7e, 0x20, 0x8f, 0x03 } };
 
-cfg_int g_cfg_stroke_length(guid_cfg_stroke_length, 10);
+cfg_int g_cfg_stroke_length(guid_cfg_stroke_length, 8);
 cfg_int g_cfg_flags(guid_cfg_flags, 0);
 cfg_string g_cfg_bindings(guid_cfg_bindings, "");
 
@@ -144,7 +144,7 @@ void GestureConfig::apply(const GestureSettings& settings) {
 
 GestureSettings GestureConfig::defaults() {
     GestureSettings settings;
-    settings.stroke_length = 10;
+    settings.stroke_length = 8;
     settings.bindings = {
         { "L", "main", "Playback/Previous", "main_window" },
         { "R", "main", "Playback/Next", "main_window" },

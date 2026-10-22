@@ -55,6 +55,13 @@ private:
 
     bool has_binding(const std::string& gesture) const;
     bool has_binding_prefix(const std::string& gesture) const;
+
+    //! Обработать один "щелчок" колеса (WHEEL_DELTA). Возвращает true, если
+    //! событие нужно съесть (иначе хост прокрутит список как обычно).
+    bool handle_wheel_notch(bool up);
+
+    //! Сообщить в консоль о жесте, для которого нет привязки (один раз на жест).
+    void report_unmatched_gesture(const std::string& gesture);
     void reset_session();
 
     HHOOK hook_ = nullptr;
@@ -84,6 +91,15 @@ private:
     bool rocker_armed_ = false;
     bool wheel_used_ = false;
     std::string wheel_sequence_;
+
+    //! Накопленная дельта колеса. Мыши и тачпады с высоким разрешением шлют
+    //! дробные дельты (1..30 вместо 120), поэтому звено появляется только
+    //! когда набрался целый щелчок - иначе один щелчок превращался в десяток
+    //! звеньев "W↑" и ни одна привязка не совпадала.
+    int wheel_accum_ = 0;
+
+    //! Жесты, о которых уже сообщили в консоль (чтобы не спамить).
+    std::vector<std::string> reported_gestures_;
 
     std::deque<std::string> pending_;
 };

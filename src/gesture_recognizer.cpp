@@ -16,6 +16,18 @@ constexpr std::size_t kMaxTokens = 32;
 // пересчитывать направление.
 constexpr double kNoisePx = 0.5;
 
+// cos(50°): если очередной шаг уходит от накопленного штриха больше чем
+// на 50 градусов, считаем это поворотом и закрываем штрих в точке угла.
+// Без этого короткие сегменты "↓ →" склеивались в один диагональный "↘".
+constexpr double kTurnCos = 0.64278760968653932632;
+
+// Слишком мелкие шаги не считаем поворотом - это дрожание руки.
+constexpr double kMinTurnStepPx = 3.0;
+
+// Накопленный штрих, который уже можно считать поворотом: короткий вектор
+// слишком чувствителен к дрожанию курсора.
+constexpr double kMinTurnAccumPx = 6.0;
+
 Token quantize_direction(double dx, double dy_up) {
     const double angle = std::atan2(dy_up, dx) * 180.0 / kPi;
     int sector = static_cast<int>(std::floor((angle + 22.5) / 45.0));
@@ -55,9 +67,15 @@ void GestureRecognizer::set_stroke_length(int value) {
 }
 
 int GestureRecognizer::threshold_px() const {
-    // Значение 10 по умолчанию даёт ~36 px - комфортный порог,
-    // при котором случайные мелкие движения не превращаются в жест.
-    return 6 + stroke_length_ * 3;
+    // 8 по умолчанию даёт 20 px: короткие жесты ("↓ →") уверенно делятся
+    // на сегменты, но случайное движение руки всё ещё не становится жестом.
+    return 4 + stroke_length_ * 2;
+}
+
+int GestureRecognizer::min_segment_px() const {
+    // Штрих, закрытый по резкому повороту, должен быть не короче 60 % порога,
+    // иначе дрожание руки порождало бы лишние звенья.
+    return (threshold_px() * 3) / 5;
 }
 
 void GestureRecognizer::begin(long x, long y) {
@@ -88,14 +106,48 @@ bool GestureRecognizer::move(long x, long y) {
 
     if (std::fabs(dx) < kNoisePx && std::fabs(dy) < kNoisePx) return false;
 
+    const double step = std::sqrt(dx * dx + dy * dy);
+
+    bool added = false;
+
+    const double accum_length = std::sqrt(accum_x_ * accum_x_ + accum_y_ * accum_y_);
+
+    // Сравниваем шаг с накопленным вектором, а не с предыдущим шагом:
+    // накопленный вектор усредняет дрожание руки.
+    if (accum_length >= kMinTurnAccumPx && step >= kMinTurnStepPx) {
+        const double cosine = (accum_x_ * dx + accum_y_ * dy) / (accum_length * step);
+        if (cosine < kTurnCos) {
+            // Резкий поворот: закрываем текущий сегмент в точке угла и
+            // начинаем новый. Иначе остатки двух сегментов складывались
+            // в диагональ и "↓ →" срабатывал через раз.
+            // Слишком короткий "огрызок" отбрасываем: он не дотягивает до
+            // порога и не должен склеиваться со следующим сегментом.
+            if (accum_length >= static_cast<double>(min_segment_px())) {
+                added = emit_direction(accum_x_, accum_y_);
+            }
+            accum_x_ = 0.0;
+            accum_y_ = 0.0;
+        }
+    }
+
     accum_x_ += dx;
     accum_y_ += dy;
 
     const double length = std::sqrt(accum_x_ * accum_x_ + accum_y_ * accum_y_);
-    if (length < static_cast<double>(threshold_px())) return false;
+    if (length < static_cast<double>(threshold_px())) return added;
 
-    const double up_x = accum_x_;
-    const double up_y = -accum_y_; // экранная ось Y смотрит вниз
+    added = emit_direction(accum_x_, accum_y_) || added;
+    accum_x_ = 0.0;
+    accum_y_ = 0.0;
+    return added;
+}
+
+bool GestureRecognizer::emit_direction(double accum_x, double accum_y) {
+    const double length = std::sqrt(accum_x * accum_x + accum_y * accum_y);
+    if (length < kNoisePx) return false;
+
+    const double up_x = accum_x;
+    const double up_y = -accum_y; // экранная ось Y смотрит вниз
 
     Token direction = quantize_direction(up_x, up_y);
 
@@ -106,9 +158,6 @@ bool GestureRecognizer::move(long x, long y) {
         const double cosine = (up_x * ux + up_y * uy) / length;
         if (cosine > kStickyCos) direction = tokens_.back();
     }
-
-    accum_x_ = 0.0;
-    accum_y_ = 0.0;
 
     // Повтор того же направления не создаёт нового звена - штрих просто длится.
     if (!tokens_.empty() && tokens_.back() == direction) return false;

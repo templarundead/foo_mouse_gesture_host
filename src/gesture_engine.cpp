@@ -106,6 +106,7 @@ void GestureEngine::reset_session() {
     rocker_armed_ = false;
     wheel_used_ = false;
     wheel_sequence_.clear();
+    wheel_accum_ = 0;
     recognizer_.cancel();
 }
 
@@ -139,6 +140,50 @@ void GestureEngine::request_right_click_replay() {
         replay_pending_ = false;
         replay_right_click();
     }
+}
+
+bool GestureEngine::handle_wheel_notch(bool up) {
+    const std::string token = token_id(up ? Token::wheel_up : Token::wheel_down);
+    const std::string next = wheel_sequence_.empty() ? token : wheel_sequence_ + " " + token;
+
+    // Точное совпадение - исполняем и начинаем последовательность заново.
+    if (has_binding(next)) {
+        wheel_used_ = true;
+        wheel_sequence_.clear();
+        queue_gesture(next);
+        return true;
+    }
+
+    // Есть более длинный жест с таким префиксом - копим дальше.
+    if (has_binding_prefix(next)) {
+        wheel_used_ = true;
+        wheel_sequence_ = next;
+        return true;
+    }
+
+    // Накопленная последовательность не подошла. Пробуем начать заново
+    // с этого щелчка, иначе один лишний щелчок "залипал" и все следующие
+    // жесты колесом не срабатывали.
+    wheel_sequence_.clear();
+    if (has_binding(token)) {
+        wheel_used_ = true;
+        queue_gesture(token);
+        return true;
+    }
+
+    report_unmatched_gesture(token);
+    return false;
+}
+
+void GestureEngine::report_unmatched_gesture(const std::string& gesture) {
+    for (const auto& seen : reported_gestures_) {
+        if (seen == gesture) return;
+    }
+    if (reported_gestures_.size() >= 32) reported_gestures_.erase(reported_gestures_.begin());
+    reported_gestures_.push_back(gesture);
+
+    FB2K_console_formatter() << "Mouse Gesture Host: gesture \"" << gesture.c_str()
+                             << "\" has no binding";
 }
 
 void GestureEngine::drain_queue() {
@@ -214,6 +259,7 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
         suppress_right_ = true;
         right_down_point_ = pt;
         right_moved_ = false;
+        wheel_accum_ = 0;
 
         recognizer_.set_stroke_length(settings_.stroke_length);
         recognizer_.begin(pt.x, pt.y);
@@ -273,6 +319,8 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
             queue_gesture(gesture);
             executed = true;
             swallow = true;
+        } else if (!gesture.empty()) {
+            report_unmatched_gesture(gesture);
         }
 
         // ПКМ была подавлена. Если это был обычный щелчок (без сдвига), а жест
@@ -325,26 +373,21 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
         const int delta = static_cast<short>(HIWORD(info.mouseData));
         if (delta == 0) return false;
 
-        const std::string token = token_id(delta > 0 ? Token::wheel_up : Token::wheel_down);
-        const std::string next = wheel_sequence_.empty() ? token : wheel_sequence_ + " " + token;
+        // Копим дельту: у высокоразрешённых колёс и тачпадов один щелчок
+        // приходит как несколько событий по 1..30 единиц.
+        wheel_accum_ += delta;
+        int notches = wheel_accum_ / WHEEL_DELTA;
+        if (notches == 0) return false;
+        wheel_accum_ -= notches * WHEEL_DELTA;
 
-        // Точное совпадение - исполняем и начинаем последовательность заново.
-        if (has_binding(next)) {
-            wheel_used_ = true;
-            wheel_sequence_.clear();
-            queue_gesture(next);
-            return true;
+        int count = notches > 0 ? notches : -notches;
+        if (count > 4) count = 4;
+
+        bool handled = false;
+        for (int i = 0; i < count; ++i) {
+            if (handle_wheel_notch(notches > 0)) handled = true;
         }
-
-        // Есть более длинный жест с таким префиксом - копим дальше.
-        if (has_binding_prefix(next)) {
-            wheel_used_ = true;
-            wheel_sequence_ = next;
-            return true;
-        }
-
-        wheel_sequence_.clear();
-        return false;
+        return handled;
     }
 
     default:
