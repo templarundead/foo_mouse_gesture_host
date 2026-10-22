@@ -1,0 +1,177 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # SDK 2023-09-23 - последний официальный SDK эпохи foobar2000 v2.0.
+  # Компоненты, собранные с ним, работают и на v2.1 / v2.2x.
+  SDK_VERSION: SDK-2023-09-23
+
+jobs:
+  build:
+    name: Release | x64
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download foobar2000 SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $archive = Join-Path $env:RUNNER_TEMP 'sdk.archive'
+          $extractDir = Join-Path $env:RUNNER_TEMP 'sdk-extracted'
+          $officialUrl = "https://www.foobar2000.org/downloads/$env:SDK_VERSION.7z"
+          $usedMirror = $false
+
+          Write-Host "Downloading $officialUrl"
+          try {
+            Invoke-WebRequest -Uri $officialUrl -OutFile $archive -UseBasicParsing
+          }
+          catch {
+            Write-Warning "Official download failed: $($_.Exception.Message)"
+            Write-Warning "Falling back to the untouched GitHub mirror of the same SDK release."
+            $mirrorUrl = "https://codeload.github.com/reupen/foobar2000-sdk-unmodified/tar.gz/refs/tags/$env:SDK_VERSION"
+            Invoke-WebRequest -Uri $mirrorUrl -OutFile $archive -UseBasicParsing
+            $usedMirror = $true
+          }
+
+          if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+
+          if ($usedMirror) {
+            tar -xzf $archive -C $extractDir
+            if ($LASTEXITCODE -ne 0) { throw "tar failed with exit code $LASTEXITCODE" }
+          }
+          else {
+            $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+            if (-not (Test-Path $sevenZip)) {
+              $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+            }
+            if (-not $sevenZip) {
+              choco install 7zip -y --no-progress | Out-Null
+              $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
+            }
+            if (-not (Test-Path $sevenZip)) { throw '7-Zip is not available on the runner.' }
+
+            & $sevenZip x $archive "-o$extractDir" -y | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "7-Zip failed with exit code $LASTEXITCODE" }
+          }
+
+          # Официальный архив может распаковаться как сразу в корень, так и в подпапку -
+          # ищем каталог, в котором лежит foobar2000\SDK\foobar2000.h.
+          $candidates = @(Get-Item $extractDir) + @(Get-ChildItem $extractDir -Directory -Recurse)
+          $sdkRoot = $candidates |
+            Where-Object { Test-Path (Join-Path $_.FullName 'foobar2000\SDK\foobar2000.h') } |
+            Select-Object -First 1
+
+          if (-not $sdkRoot) { throw 'Could not locate the foobar2000 SDK root after extraction.' }
+
+          Write-Host "SDK root: $($sdkRoot.FullName)"
+          New-Item -ItemType Directory -Force -Path sdk | Out-Null
+          Copy-Item -Path (Join-Path $sdkRoot.FullName '*') -Destination sdk -Recurse -Force
+
+          if (-not (Test-Path 'sdk\foobar2000\SDK\foobar2000.h')) { throw 'SDK was not copied correctly.' }
+          Get-ChildItem sdk | Select-Object -ExpandProperty Name
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arguments = @(
+            'foo_mouse_gesture_host.sln', '/m', '/nologo', '/v:m',
+            '/p:Configuration=Release', '/p:Platform=x64',
+            '/flp:LogFile=build.log;Verbosity=normal;Encoding=UTF-8'
+          )
+          msbuild @arguments
+          if ($LASTEXITCODE -ne 0) { throw "MSBuild failed with exit code $LASTEXITCODE" }
+
+      - name: Report build errors
+        if: failure()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path build.log)) {
+            Write-Host '::error title=MSBuild::build.log was not produced'
+            exit 0
+          }
+
+          $errors = Select-String -Path build.log -Pattern ': error [A-Z]{1,4}[0-9]{3,5}|error MSB[0-9]{4}' |
+            Select-Object -First 10
+          foreach ($entry in $errors) {
+            Write-Host "::error title=MSBuild::$($entry.Line.Trim())"
+          }
+
+          if (-not $errors) {
+            Get-Content build.log -Tail 20 | ForEach-Object { Write-Host "::error title=MSBuild tail::$_" }
+          }
+
+      - name: Upload MSBuild log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: msbuild-log-${{ github.run_number }}
+          path: build.log
+          if-no-files-found: ignore
+
+      - name: Package .fb2k-component
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $version = if ($env:GITHUB_REF -like 'refs/tags/*') {
+            $env:GITHUB_REF -replace '^refs/tags/', ''
+          } else {
+            'dev'
+          }
+
+          $dll = Get-Item 'build\x64\Release\foo_mouse_gesture_host.dll' -ErrorAction Stop
+          if ($dll.Length -lt 20000) {
+            throw "Built DLL looks wrong: $($dll.Length) bytes"
+          }
+          Write-Host "DLL: $($dll.FullName) ($($dll.Length) bytes)"
+
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $package = "dist\foo_mouse_gesture_host-$version.fb2k-component"
+          Compress-Archive -Path $dll.FullName -DestinationPath $package -Force
+
+          Get-Item $package | Select-Object FullName, Length
+          "MGH_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "MGH_PACKAGE=$package" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: foo_mouse_gesture_host-${{ github.run_number }}
+          path: dist/*.fb2k-component
+          if-no-files-found: error
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
+          $package = (Resolve-Path $env:MGH_PACKAGE).Path
+
+          gh release create $tag $package `
+            --title "Mouse Gesture Host $tag" `
+            --generate-notes `
+            --verify-tag
+
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }

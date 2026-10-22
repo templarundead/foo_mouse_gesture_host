@@ -1,0 +1,17 @@
+# Сборка и локальные артефакты
+build/
+dist/
+bin/
+obj/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+.vs/
+
+# Скачанный foobar2000 SDK (не хранится в репозитории)
+sdk/
+
+# Прочее
+Thumbs.db
+desktop.ini

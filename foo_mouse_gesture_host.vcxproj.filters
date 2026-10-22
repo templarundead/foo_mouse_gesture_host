@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="src">
+      <UniqueIdentifier>{4E3C1C9A-6B6B-4E4E-9F6D-2A7A1C0A5D01}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\command_catalog.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\gesture_config.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\gesture_engine.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\gesture_recognizer.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\gesture_tokens.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\main.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\preferences_page.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\command_catalog.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\common.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gesture_config.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gesture_engine.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gesture_recognizer.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gesture_tokens.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\preferences_page.h">
+      <Filter>src</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>
