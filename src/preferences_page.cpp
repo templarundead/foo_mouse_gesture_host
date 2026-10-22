@@ -963,8 +963,8 @@ void GesturePreferencesInstance::create_children() {
     count_label_ = make_static(L"", SS_LEFT | SS_CENTERIMAGE);
     hint_label_ = make_static(
         L"1. Соберите жест стрелками / wheel / rocker.\r\n"
-        L"2. Выберите команду и нажмите Add New.\r\n"
-        L"3. Rocker: зажмите одну кнопку мыши и щёлкните другой (R+L / L+R).",
+        L"2. Выберите команду, нажмите Add New и Apply.\r\n"
+        L"Rocker: R+L = держим ПКМ, кликаем ЛКМ; L+R — наоборот.",
         SS_LEFT);
 
     up_label_ = make_static(L"up", SS_CENTER);
@@ -1812,11 +1812,11 @@ int GesturePreferencesInstance::selected_row() const {
 
 int GesturePreferencesInstance::read_stroke_length() const {
     const std::wstring text = read_window_text(stroke_edit_);
-    if (text.empty()) return 10;
+    if (text.empty()) return 8;
 
     wchar_t* end = nullptr;
     const long value = wcstol(text.c_str(), &end, 10);
-    if (end == text.c_str()) return 10;
+    if (end == text.c_str()) return 8;
     return clamp_int(static_cast<int>(value), kMinStrokeLength, kMaxStrokeLength);
 }
 
