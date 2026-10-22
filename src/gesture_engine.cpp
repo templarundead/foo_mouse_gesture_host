@@ -46,6 +46,8 @@ void GestureEngine::replay_right_click() {
     inputs[1].type = INPUT_MOUSE;
     inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
 
+    replay_guard_ = GetTickCount64();
+
     if (SendInput(2, inputs, sizeof(INPUT)) != 2) {
         FB2K_console_formatter() << "Mouse Gesture Host: failed to replay the right click ("
                                  << static_cast<unsigned long>(GetLastError()) << ")";
@@ -140,7 +142,16 @@ void GestureEngine::drain_queue() {
 
         for (std::size_t i = 0; i < matches.size(); ++i) {
             if (i > 0 && settings_.first_only) break;
-            execute_binding(matches[i]);
+
+            if (!execute_binding(matches[i])) {
+                // Привязка есть, но команда не нашлась (меню переименовали,
+                // компонент не загрузился) - иначе это выглядит как
+                // "жест не работает".
+                FB2K_console_formatter()
+                    << "Mouse Gesture Host: gesture \"" << gesture.c_str()
+                    << "\" matched, but command \"" << matches[i].command_path.c_str()
+                    << "\" was not found";
+            }
         }
     }
 }
@@ -149,8 +160,13 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
     if (settings_.disabled) return false;
 
     // Свои же синтезированные события не перехватываем - иначе правый клик
-    // никогда не дойдёт до foobar2000.
-    if ((info.flags & LLMHF_INJECTED) != 0) return false;
+    // никогда не дойдёт до foobar2000. Игнорируем их только короткое время
+    // после SendInput: тачпады и часть мышей тоже помечают ввод как
+    // LLMHF_INJECTED, и постоянный фильтр отключил бы жесты для них.
+    if ((info.flags & LLMHF_INJECTED) != 0 && replay_guard_ != 0 &&
+        GetTickCount64() - replay_guard_ < 500) {
+        return false;
+    }
 
     const POINT pt = info.pt;
 
