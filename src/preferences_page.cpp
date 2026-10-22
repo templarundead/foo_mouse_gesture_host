@@ -153,6 +153,13 @@ private:
     int current_place_index() const;
     std::string current_group_id() const;
     std::string current_place_id() const;
+    //! Индекс привязки в settings_.bindings по отображаемой строке ListView
+    //! (при включённом group view порядок строк не совпадает с порядком привязок).
+    int binding_index_from_display(int display_row) const;
+    int display_row_from_binding_index(int binding_index) const;
+    //! Выделить строку, соответствующую привязке.
+    void select_binding(int binding_index);
+    //! Индекс выбранной привязки (не строки таблицы!).
     int selected_row() const;
     int read_stroke_length() const;
 
@@ -234,6 +241,7 @@ private:
     int dpi_ = 96;
     bool dirty_ = false;
     bool updating_ = false;
+    bool diagnostics_logged_ = false;
 
     preferences_page_callback::ptr callback_;
     fb2k::CCoreDarkModeHooks dark_mode_;
@@ -613,8 +621,8 @@ void GesturePreferencesInstance::layout() {
         y += scale(18) + 2 * metrics.check_step;
 
         // --- правая колонка: редактор привязки ---
-        int left_width = width * 42 / 100;
-        left_width = clamp_int(left_width, scale(250), scale(380));
+        int left_width = width * 38 / 100;
+        left_width = clamp_int(left_width, scale(210), scale(380));
 
         const int form_x = margin + left_width + scale(16);
         const int form_width = width - margin - form_x;
@@ -854,8 +862,7 @@ void GesturePreferencesInstance::refresh_list() {
     }
 
     if (previous >= 0 && previous < static_cast<int>(settings_.bindings.size())) {
-        ListView_SetItemState(list_, previous, LVIS_SELECTED | LVIS_FOCUSED,
-                              LVIS_SELECTED | LVIS_FOCUSED);
+        select_binding(previous);
     }
     updating_ = was_updating;
 
@@ -882,6 +889,13 @@ void GesturePreferencesInstance::refresh_command_list() {
 
     const std::string group_id = current_group_id();
     catalog_ = list_commands(group_id);
+
+    if (!diagnostics_logged_) {
+        diagnostics_logged_ = true;
+        FB2K_console_formatter() << "Mouse Gesture Host: " << static_cast<t_size>(settings_.bindings.size())
+                                 << " gesture bindings, " << static_cast<t_size>(catalog_.size())
+                                 << " commands in group \"" << group_id.c_str() << "\"";
+    }
 
     if (catalog_.empty() && group_id == "main") {
         FB2K_console_formatter() << "Mouse Gesture Host: the main menu returned no commands "
@@ -931,8 +945,10 @@ void GesturePreferencesInstance::on_group_changed() {
     refresh_command_list();
 }
 
-void GesturePreferencesInstance::on_list_selection_changed(int index) {
+void GesturePreferencesInstance::on_list_selection_changed(int display_row) {
     if (updating_) return;
+
+    const int index = binding_index_from_display(display_row);
     if (index < 0 || index >= static_cast<int>(settings_.bindings.size())) return;
 
     const GestureBinding& binding = settings_.bindings[static_cast<std::size_t>(index)];
@@ -1011,8 +1027,7 @@ void GesturePreferencesInstance::on_add() {
     refresh_list();
 
     const int last = static_cast<int>(settings_.bindings.size()) - 1;
-    ListView_SetItemState(list_, last, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-    ListView_EnsureVisible(list_, last, FALSE);
+    select_binding(last);
 
     update_buttons();
     set_dirty(true);
@@ -1044,7 +1059,7 @@ void GesturePreferencesInstance::on_update() {
 
     settings_.bindings[static_cast<std::size_t>(index)] = binding;
     refresh_list();
-    ListView_SetItemState(list_, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    select_binding(index);
 
     set_dirty(true);
 }
@@ -1056,12 +1071,11 @@ void GesturePreferencesInstance::on_delete() {
     settings_.bindings.erase(settings_.bindings.begin() + index);
     refresh_list();
 
-    const int new_index = index < static_cast<int>(settings_.bindings.size()) ? index
-                                                                              : static_cast<int>(settings_.bindings.size()) - 1;
-    if (new_index >= 0) {
-        ListView_SetItemState(list_, new_index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-        ListView_EnsureVisible(list_, new_index, FALSE);
-    }
+    const int new_index = index < static_cast<int>(settings_.bindings.size())
+        ? index
+        : static_cast<int>(settings_.bindings.size()) - 1;
+    if (new_index >= 0) select_binding(new_index);
+
     update_buttons();
     set_dirty(true);
 }
@@ -1077,8 +1091,7 @@ void GesturePreferencesInstance::on_move(int delta) {
               settings_.bindings[static_cast<std::size_t>(target)]);
 
     refresh_list();
-    ListView_SetItemState(list_, target, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-    ListView_EnsureVisible(list_, target, FALSE);
+    select_binding(target);
     update_buttons();
     set_dirty(true);
 }
@@ -1150,9 +1163,39 @@ std::string GesturePreferencesInstance::current_place_id() const {
     return "main_window";
 }
 
+int GesturePreferencesInstance::binding_index_from_display(int display_row) const {
+    if (list_ == nullptr || display_row < 0) return -1;
+
+    LVITEMW item = {};
+    item.mask = LVIF_PARAM;
+    item.iItem = display_row;
+    if (!ListView_GetItem(list_, &item)) return -1;
+    return static_cast<int>(item.lParam);
+}
+
+int GesturePreferencesInstance::display_row_from_binding_index(int binding_index) const {
+    if (list_ == nullptr || binding_index < 0) return -1;
+
+    const int count = ListView_GetItemCount(list_);
+    for (int row = 0; row < count; ++row) {
+        if (binding_index_from_display(row) == binding_index) return row;
+    }
+    return -1;
+}
+
+void GesturePreferencesInstance::select_binding(int binding_index) {
+    const int row = display_row_from_binding_index(binding_index);
+    if (row < 0) return;
+
+    ListView_SetItemState(list_, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_EnsureVisible(list_, row, FALSE);
+}
+
 int GesturePreferencesInstance::selected_row() const {
     if (list_ == nullptr) return -1;
-    return ListView_GetNextItem(list_, -1, LVNI_SELECTED);
+
+    const int display = ListView_GetNextItem(list_, -1, LVNI_SELECTED);
+    return binding_index_from_display(display);
 }
 
 int GesturePreferencesInstance::read_stroke_length() const {
