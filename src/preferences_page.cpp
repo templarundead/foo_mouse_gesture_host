@@ -876,6 +876,14 @@ void GesturePreferencesInstance::draw_list_row(const DRAWITEMSTRUCT& item) {
     HDC dc = item.hDC;
     RECT rc = item.rcItem;
 
+    // В report view rcItem может покрывать только первую колонку - растягиваем
+    // строку до правого края клиентской области, иначе остальные колонки
+    // окажутся вне области отрисовки и текст обрежется.
+    RECT client = {};
+    if (list_ != nullptr && GetClientRect(list_, &client) && client.right > rc.right) {
+        rc.right = client.right;
+    }
+
     const bool selected = (item.itemState & ODS_SELECTED) != 0 && !row.is_header;
 
     HBRUSH brush = CreateSolidBrush(row.is_header
