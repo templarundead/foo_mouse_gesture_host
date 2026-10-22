@@ -201,6 +201,7 @@ private:
     std::vector<ListRow> rows_;
 
     HWND count_label_ = nullptr;
+    HWND hint_label_ = nullptr;
     HFONT header_font_ = nullptr;
 
     void draw_list_row(const DRAWITEMSTRUCT& item);
@@ -305,7 +306,17 @@ GesturePreferencesInstance::GesturePreferencesInstance(HWND parent,
 
     create_children();
     apply_theme();
-    load_from_settings();
+
+    if (settings_.bindings.empty()) {
+        // Страховка: страница не должна открываться с пустой таблицей -
+        // без строк нельзя ни выбрать привязку, ни понять, что происходит.
+        settings_ = GestureConfig::defaults();
+        load_from_settings();
+        set_dirty(true);
+    } else {
+        load_from_settings();
+    }
+
     layout();
 
     dark_mode_.AddDialogWithControls(hwnd_);
@@ -472,6 +483,9 @@ void GesturePreferencesInstance::create_children() {
     header_command_ = make_static(L"Command", SS_LEFT | SS_CENTERIMAGE);
     header_place_ = make_static(L"Place", SS_LEFT | SS_CENTERIMAGE);
     count_label_ = make_static(L"", SS_LEFT | SS_CENTERIMAGE);
+    hint_label_ = make_static(
+        L"Соберите жест стрелками/wheel/rocker, выберите команду — затем Add New.",
+        SS_LEFT);
 
     up_label_ = make_static(L"up", SS_CENTER);
     down_label_ = make_static(L"down", SS_CENTER);
@@ -712,28 +726,46 @@ void GesturePreferencesInstance::layout() {
             x += button_width + gap;
         }
 
+        if (hint_label_ != nullptr) {
+            MoveWindow(hint_label_, form_x, buttons_y + control_height + scale(8), form_width,
+                       label_height * 2, paint);
+        }
+
         const int right_bottom = buttons_y + control_height;
         return y > right_bottom ? y : right_bottom;
     };
 
     // Измеряем блок сначала с обычными отступами; если не помещается - сжимаем.
     const int min_list_height = scale(90);
+    const int count_height = scale(16);
+    const int count_gap = scale(6);
+
+    // Между таблицей и блоком настроек стоит подпись "Всего привязок: N",
+    // поэтому её высота вычитается из высоты таблицы (иначе она наезжает
+    // на подписи крестовины).
+    const auto list_bottom_for = [&](int block_top) {
+        return block_top - count_height - count_gap;
+    };
 
     const Metrics* metrics = &spacious;
     int lower_bottom = place_lower(0, *metrics, false);
-    int top = height - margin - lower_bottom;
+    int block_top = height - margin - lower_bottom;
+    int list_bottom = list_bottom_for(block_top);
 
-    if (top - scale(12) - list_top < min_list_height) {
+    if (list_bottom - list_top < min_list_height) {
         metrics = &compact;
         lower_bottom = place_lower(0, *metrics, false);
-        top = height - margin - lower_bottom;
-        if (top - scale(12) - list_top < min_list_height) {
+        block_top = height - margin - lower_bottom;
+        list_bottom = list_bottom_for(block_top);
+
+        if (list_bottom - list_top < min_list_height) {
             // Совсем мало места: список ужимается до минимума.
-            top = list_top + scale(12) + min_list_height;
+            list_bottom = list_top + min_list_height;
+            block_top = list_bottom + count_height + count_gap;
         }
     }
 
-    const int list_height = top - scale(12) - list_top;
+    const int list_height = list_bottom - list_top;
 
     // --- таблица привязок ---
     const int list_width = width - 2 * margin;
@@ -766,13 +798,13 @@ void GesturePreferencesInstance::layout() {
     MoveWindow(header_place_, header_x + column_gesture + column_command, margin,
                width - margin - (header_x + column_gesture + column_command), header_height, TRUE);
 
-    // Счётчик привязок - слева под таблицей.
+    // Счётчик привязок - между таблицей и блоком настроек.
     if (count_label_ != nullptr) {
-        MoveWindow(count_label_, margin, list_top + list_height + scale(1), scale(260), scale(16), TRUE);
+        MoveWindow(count_label_, margin, list_bottom + scale(2), list_width, count_height, TRUE);
     }
 
     // Финальная расстановка нижнего блока на вычисленном месте.
-    place_lower(top, *metrics, true);
+    place_lower(block_top, *metrics, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -1143,6 +1175,10 @@ void GesturePreferencesInstance::on_list_selection_changed(int display_row) {
 
 void GesturePreferencesInstance::on_add() {
     const std::string gesture = editor_gesture();
+
+    FB2K_console_formatter() << "Mouse Gesture Host: Add New pressed, gesture=\"" << gesture.c_str()
+                             << "\", commands=" << static_cast<t_size>(catalog_.size());
+
     if (gesture.empty()) {
         MessageBoxW(hwnd_,
                     L"Сначала соберите жест: нажмите кнопки-стрелки, "
