@@ -217,13 +217,13 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
         if (!was_down) return false;
 
         if (!session_from_right_) {
-            // Завершение рокера "L+R".
+            // Завершение рокера "L+R". Нажатие мы уже съели, поэтому съедаем
+            // и отпускание - иначе хост получил бы "up без down".
             if (rocker_armed_) {
                 rocker_armed_ = false;
                 queue_gesture(token_id(Token::rocker_left_right));
-                return true;
             }
-            return false;
+            return true;
         }
 
         bool swallow = rocker_armed_ || wheel_used_;
@@ -241,14 +241,18 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
             swallow = true;
         }
 
-        // ПКМ была подавлена: если жест не сработал, возвращаем foobar2000
-        // обычный правый клик, чтобы открылось контекстное меню.
+        // ПКМ была подавлена. Если это был обычный щелчок (без сдвига), а жест
+        // не сработал - возвращаем foobar2000 правый клик, чтобы открылось
+        // контекстное меню. Отпускание кнопки при этом всегда съедаем сами:
+        // иначе хост получил бы "up без down".
         const bool was_suppressed = suppress_right_;
+        const bool was_tap = !right_moved_;
         suppress_right_ = false;
         right_moved_ = false;
 
-        if (was_suppressed && !executed && !wheel_in_use) {
-            replay_right_click();
+        if (was_suppressed) {
+            swallow = true;
+            if (!executed && !wheel_in_use && was_tap) replay_right_click();
         }
 
         wheel_used_ = false;
