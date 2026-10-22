@@ -273,9 +273,10 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
                 }
             }
 
-            // Пока идёт жест, движения тоже не отдаём хосту - иначе он
-            // успеет начать перетаскивание треков.
-            if (suppress_right_) return true;
+            // ВАЖНО: WM_MOUSEMOVE нельзя съедать. Возврат true из
+            // WH_MOUSE_LL для движения блокирует само перемещение курсора
+            // (курсор "замерзает"). Драг у хоста уже не начнётся, потому что
+            // мы съели WM_RBUTTONDOWN, - этого достаточно.
         }
         return false;
     }

@@ -1092,16 +1092,13 @@ void GesturePreferencesInstance::layout() {
     const int cell = scale(38);
     const int cell_gap = scale(4);
     const int side_label = scale(44);                 // ширина подписей left/right
-    const int pad_width = side_label + cell_gap + 3 * cell + 2 * cell_gap + cell_gap + side_label;
 
     // Высота крестовины: подпись up + ↑ + ряд + ↓ + подпись down.
     const int pad_height = label_height + control_height + cell_gap + control_height + cell_gap +
                            control_height + label_height;
 
     // --- wheel / rocker / stroke / галочки ----------------------------------
-    const int wheel_buttons_width = scale(28) + scale(4) + scale(28);
     const int wheel_height = control_height + label_height;          // кнопки + подписи up/down
-    const int rocker_width = scale(48) + gap + scale(48);
     const int rocker_height = control_height;
 
     // На широкой странице вторая и третья галочки стоят в одном ряду,
@@ -1116,12 +1113,17 @@ void GesturePreferencesInstance::layout() {
                                     checks_height;
 
     // --- левая колонка: ровно по ширине крестовины --------------------------
-    // Остальное отдаём форме: так поля и кнопки получаются шире, как в эталоне.
-    int left_width = pad_width + scale(16);
-    if (left_width < scale(240)) left_width = scale(240);
-    left_width = clamp_int(left_width, scale(240), scale(340));
+    // Крестовина стоит вплотную к левому краю, чтобы подпись "left" была
+    // на одной вертикали с "wheel" и "rocker" (все три - от margin).
+    const int pad_x = margin + side_label + cell_gap;
 
-    const int form_x_early = margin + left_width + scale(20);
+    // Правый край крестовины (с подписью "right") задаёт ширину левой колонки.
+    const int pad_right = pad_x + 3 * cell + 2 * cell_gap + cell_gap + side_label;
+    const int left_width = pad_right - margin;
+
+    // Остальное отдаём форме: поля Gesture/Group/Command/Place получаются
+    // максимально широкими, как в эталоне.
+    const int form_x_early = margin + left_width + scale(14);
     const int form_width_early = width - margin - form_x_early;
 
     // --- ширины кнопок по фактической ширине текста -------------------------
@@ -1226,10 +1228,6 @@ void GesturePreferencesInstance::layout() {
     const int lower_top = count_top + count_height + count_gap;
 
     // --- левая колонка ------------------------------------------------------
-    // Крестовина центрируется по горизонтали в своей области.
-    int pad_x = margin + (left_width - (3 * cell + 2 * cell_gap)) / 2;
-    if (pad_x < margin) pad_x = margin;
-
     const int pad_center = pad_x + cell + cell_gap + cell / 2;   // центр колонки BS
     const int up_x = pad_center - cell / 2;
     const int left_x = pad_x;
@@ -1295,10 +1293,20 @@ void GesturePreferencesInstance::layout() {
     const int form_x = form_x_early;
     const int form_width = form_width_early;
 
-    int label_width = scale(84);
+    // Подписи полей - по фактической ширине самого длинного текста
+    // ("Command"), а не по фиксированным 84 px: так поля шире.
+    int label_width = text_width(L"Command");
+    const int label_gesture = text_width(L"Gesture");
+    const int label_group = text_width(L"Group");
+    const int label_place = text_width(L"Place");
+    if (label_gesture > label_width) label_width = label_gesture;
+    if (label_group > label_width) label_width = label_group;
+    if (label_place > label_width) label_width = label_place;
+    label_width += scale(10);
+
     int editor_width = form_width - label_width;
-    if (editor_width < scale(150)) {
-        label_width = scale(64);
+    if (editor_width < scale(120)) {
+        label_width = scale(60);
         editor_width = form_width - label_width;
     }
     if (editor_width < scale(80)) editor_width = scale(80);
@@ -1317,8 +1325,7 @@ void GesturePreferencesInstance::layout() {
                  SWP_NOZORDER | SWP_NOACTIVATE);
 
     MoveWindow(place_label_, form_x, lower_top + 3 * row_step + scale(4), label_width, label_height, TRUE);
-    SetWindowPos(place_combo_, nullptr, editor_x, lower_top + 3 * row_step,
-                 editor_width < scale(200) ? editor_width : scale(200), scale(160),
+    SetWindowPos(place_combo_, nullptr, editor_x, lower_top + 3 * row_step, editor_width, scale(160),
                  SWP_NOZORDER | SWP_NOACTIVATE);
 
     // Кнопки управления таблицей. Ширина каждой уже посчитана по тексту
