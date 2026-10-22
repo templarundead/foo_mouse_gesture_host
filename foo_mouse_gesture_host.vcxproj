@@ -44,6 +44,10 @@
     <OutDir>$(ProjectDir)build\$(Platform)\$(Configuration)\</OutDir>
     <IntDir>$(ProjectDir)build\obj\$(Platform)\$(Configuration)\</IntDir>
     <SdkDir>$(ProjectDir)sdk\</SdkDir>
+    <!-- PFC собирается в конфигурациях "Debug FB2K"/"Release FB2K": только в них
+         из pfc.lib исключаются fb2k-hooks, которые предоставляет foobar2000_SDK.lib. -->
+    <PfcConfiguration Condition="'$(Configuration)' == 'Debug'">Debug FB2K</PfcConfiguration>
+    <PfcConfiguration Condition="'$(Configuration)' == 'Release'">Release FB2K</PfcConfiguration>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
@@ -58,7 +62,7 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>$(SdkDir)foobar2000\shared\shared-$(Platform).lib;comctl32.lib;uxtheme.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SdkDir)foobar2000\shared\shared-$(Platform).lib;comctl32.lib;uxtheme.lib;shlwapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -107,7 +111,7 @@
     <ProjectReference Include="sdk\pfc\pfc.vcxproj">
       <Project>{EBFFFB4E-261D-44D3-B89C-957B31A0BF9C}</Project>
       <LinkLibraryDependencies>true</LinkLibraryDependencies>
-      <SetConfiguration>Configuration=$(Configuration)</SetConfiguration>
+      <SetConfiguration>Configuration=$(PfcConfiguration)</SetConfiguration>
       <SetPlatform>Platform=$(Platform)</SetPlatform>
     </ProjectReference>
     <ProjectReference Include="sdk\foobar2000\SDK\foobar2000_SDK.vcxproj">
