@@ -103,6 +103,25 @@ jobs:
           if (-not (Test-Path $dll)) { throw "Expected component DLL was not produced: $dll" }
           Get-Item $dll | Select-Object FullName, Length
 
+      - name: Report build errors
+        if: failure()
+        shell: pwsh
+        run: |
+          if (-not (Test-Path build.log)) {
+            Write-Host '::error title=MSBuild::build.log was not produced'
+            exit 0
+          }
+
+          $errors = Select-String -Path build.log -Pattern ': error [A-Z]{1,4}[0-9]{3,5}|error MSB[0-9]{4}' |
+            Select-Object -First 10
+          foreach ($entry in $errors) {
+            Write-Host "::error title=MSBuild::$($entry.Line.Trim())"
+          }
+
+          if (-not $errors) {
+            Get-Content build.log -Tail 20 | ForEach-Object { Write-Host "::error title=MSBuild tail::$_" }
+          }
+
       - name: Upload MSBuild log
         if: always()
         uses: actions/upload-artifact@v4
