@@ -113,29 +113,20 @@ jobs:
           }
 
           $lines = Get-Content build.log
-
-          # Диагностика: что именно линковалось и какие .lib реально собраны.
-          $linkIndex = ($lines | Select-String -Pattern '^Link:' | Select-Object -First 1).LineNumber
-          if ($linkIndex) {
-            $endIndex = [Math]::Min($linkIndex + 25, $lines.Count - 1)
-            $chunk = ($lines[($linkIndex - 1)..$endIndex] -join ' | ')
-            if ($chunk.Length -gt 3500) { $chunk = $chunk.Substring(0, 3500) }
-            Write-Host "::error title=LinkCommand::$chunk"
-          }
-
-          $projects = ($lines | Select-String -Pattern 'vcxproj -> ' | ForEach-Object { $_.Line.Trim() }) -join ' || '
-          if ($projects.Length -gt 3500) { $projects = $projects.Substring(0, 3500) }
-          Write-Host "::error title=BuiltProjects::$projects"
-
-          $libs = (Get-ChildItem -Recurse -Filter *.lib -ErrorAction SilentlyContinue |
-            Select-Object -First 20 | ForEach-Object { $_.FullName }) -join ' || '
-          if ($libs.Length -gt 3500) { $libs = $libs.Substring(0, 3500) }
-          Write-Host "::error title=LibsOnDisk::$libs"
-
           $errors = Select-String -Path build.log -Pattern ': error [A-Z]{1,4}[0-9]{3,5}|error MSB[0-9]{4}' |
             Select-Object -First 5
           foreach ($entry in $errors) {
             Write-Host "::error title=MSBuild::$($entry.Line.Trim())"
+          }
+
+          # Полный лог по частям: артефакты Azure недоступны, а check-run annotations читаются API.
+          $text = $lines -join "`n"
+          $chunkSize = 3000
+          $parts = [Math]::Ceiling($text.Length / $chunkSize)
+          for ($i = 0; $i -lt [Math]::Min($parts, 14); $i++) {
+            $offset = $i * $chunkSize
+            $len = [Math]::Min($chunkSize, $text.Length - $offset)
+            Write-Host "::error title=LogPart$($i + 1)of$parts::$($text.Substring($offset, $len))"
           }
 
       - name: Upload MSBuild log
