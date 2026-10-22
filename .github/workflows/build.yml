@@ -91,11 +91,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $solutionDir = (Get-Location).Path + '\'
           $arguments = @(
-            'foo_mouse_gesture_host.vcxproj', '/m', '/nologo', '/v:m',
+            'foo_mouse_gesture_host.sln', '/m', '/nologo', '/v:m',
             '/p:Configuration=Release', '/p:Platform=x64',
-            "/p:SolutionDir=$solutionDir",
             '/flp:LogFile=build.log;Verbosity=normal;Encoding=UTF-8'
           )
           msbuild @arguments
@@ -110,18 +108,15 @@ jobs:
             exit 0
           }
 
-          $lines = Get-Content build.log
           $errors = Select-String -Path build.log -Pattern ': error [A-Z]{1,4}[0-9]{3,5}|error MSB[0-9]{4}' |
-            Select-Object -First 5
+            Select-Object -First 10
           foreach ($entry in $errors) {
             Write-Host "::error title=MSBuild::$($entry.Line.Trim())"
           }
 
-          # Полный лог по частям: артефакты Azure недоступны, а check-run annotations читаются API.
-          $linkLines = ($lines | Select-String -Pattern 'pfc\.lib|foobar2000_SDK\.lib|Link:|AdditionalDependencies' |
-            ForEach-Object { $_.Line.Trim() }) -join ' | '
-          if ($linkLines.Length -gt 3500) { $linkLines = $linkLines.Substring(0, 3500) }
-          Write-Host "::error title=LinkInputs::$linkLines"
+          if (-not $errors) {
+            Get-Content build.log -Tail 20 | ForEach-Object { Write-Host "::error title=MSBuild tail::$_" }
+          }
 
       - name: Upload MSBuild log
         if: always()
