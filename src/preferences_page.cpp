@@ -18,6 +18,7 @@ namespace {
 
 constexpr GUID kPreferencesPageGuid = { 0x6f0c4a52, 0x8d31, 0x4c0e, { 0x9b, 0x7e, 0x2a, 0x64, 0x11, 0xd8, 0x3f, 0x10 } };
 constexpr wchar_t kPreferencesPageClass[] = L"foo_mouse_gesture_host_preferences";
+constexpr UINT_PTR kCommandListSubclassId = 0x4d4748;
 
 enum ControlId : int {
     kIdList = 1001,
@@ -619,9 +620,13 @@ public:
 
 private:
     static LRESULT CALLBACK window_proc_static(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
+    static LRESULT CALLBACK command_list_subclass_proc(HWND hwnd, UINT msg, WPARAM wparam,
+                                                       LPARAM lparam, UINT_PTR subclass_id,
+                                                       DWORD_PTR ref_data);
     LRESULT window_proc(UINT msg, WPARAM wparam, LPARAM lparam);
 
     static void register_window_class();
+    void install_command_list_scroll_handler();
 
     void create_children();
     //! Подогнать страницу под клиентскую область родителя (хост не всегда
@@ -728,6 +733,7 @@ private:
     HWND gesture_edit_ = nullptr;
     HWND group_combo_ = nullptr;
     HWND command_combo_ = nullptr;
+    HWND command_list_ = nullptr;
     HWND place_combo_ = nullptr;
 
     HWND add_button_ = nullptr;
@@ -994,10 +1000,8 @@ void GesturePreferencesInstance::create_children() {
     gesture_edit_ = make_edit(kIdGestureEdit, ES_READONLY);
     group_combo_ = make_combo(kIdGroupCombo);
     command_combo_ = make_combo(kIdCommandCombo);
-    // Не растягиваем выпадающий список на 30 строк: компактный список
-    // быстрее перерисовывается при перетаскивании ползунка.
-    ComboBox_SetMinVisible(command_combo_, 12);
     place_combo_ = make_combo(kIdPlaceCombo);
+    install_command_list_scroll_handler();
 
     add_button_ = make_button(L"Add New", kIdAdd);
     update_button_ = make_button(L"Update", kIdUpdate);
@@ -1863,6 +1867,44 @@ int GesturePreferencesInstance::read_stroke_length() const {
 }
 
 // ---------------------------------------------------------------------------
+//  Отложенная прокрутка длинного списка команд
+// ---------------------------------------------------------------------------
+
+void GesturePreferencesInstance::install_command_list_scroll_handler() {
+    if (command_combo_ == nullptr) return;
+
+    COMBOBOXINFO info = {};
+    info.cbSize = sizeof(info);
+    if (!GetComboBoxInfo(command_combo_, &info) || info.hwndList == nullptr ||
+        command_list_ == info.hwndList) {
+        return;
+    }
+
+    if (SetWindowSubclass(info.hwndList, command_list_subclass_proc, kCommandListSubclassId,
+                          reinterpret_cast<DWORD_PTR>(this))) {
+        command_list_ = info.hwndList;
+    }
+}
+
+LRESULT CALLBACK GesturePreferencesInstance::command_list_subclass_proc(
+    HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UINT_PTR subclass_id, DWORD_PTR ref_data) {
+    if (msg == WM_VSCROLL && LOWORD(wparam) == SB_THUMBTRACK) {
+        // Windows шлёт это сообщение непрерывно при перетаскивании ползунка.
+        // Не перерисовываем сотни длинных строк на каждом шаге: ползунок
+        // продолжает двигаться, а SB_THUMBPOSITION при отпускании прокрутит
+        // список сразу в конечную позицию. Остальные способы прокрутки живые.
+        return 0;
+    }
+
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, command_list_subclass_proc, subclass_id);
+        auto* self = reinterpret_cast<GesturePreferencesInstance*>(ref_data);
+        if (self != nullptr) self->command_list_ = nullptr;
+    }
+    return DefSubclassProc(hwnd, msg, wparam, lparam);
+}
+
+// ---------------------------------------------------------------------------
 //  Оконная процедура
 // ---------------------------------------------------------------------------
 
@@ -1945,6 +1987,10 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
         case kIdWheelDown: if (code == BN_CLICKED) on_direction(Token::wheel_down); return 0;
         case kIdRockerRightLeft: if (code == BN_CLICKED) on_direction(Token::rocker_right_left); return 0;
         case kIdRockerLeftRight: if (code == BN_CLICKED) on_direction(Token::rocker_left_right); return 0;
+
+        case kIdCommandCombo:
+            if (code == CBN_DROPDOWN) install_command_list_scroll_handler();
+            return 0;
 
         case kIdGroupCombo: if (code == CBN_SELCHANGE) on_group_changed(); return 0;
 
