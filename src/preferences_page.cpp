@@ -454,6 +454,8 @@ void GestureListControl::draw_row(HDC dc, const RECT& row_rect, const GestureLis
 }
 
 void GestureListControl::paint(HDC target, const RECT& client) {
+    if (client.right - client.left <= 0 || client.bottom - client.top <= 0) return;
+
     // Двойная буферизация: без неё при прокрутке заметно мерцание.
     HDC memory_dc = CreateCompatibleDC(target);
     HBITMAP bitmap = CreateCompatibleBitmap(target, client.right - client.left, client.bottom - client.top);
