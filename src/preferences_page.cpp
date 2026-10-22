@@ -674,6 +674,8 @@ private:
     HWND make_checkbox(const wchar_t* text, int id);
 
     int scale(int value) const { return MulDiv(value, dpi_, 96); }
+    //! Ширина текста в пикселях шрифтом страницы (для расчёта ширины кнопок).
+    int text_width(const wchar_t* text) const;
 
     // --- данные ---
     GestureSettings settings_;
@@ -960,7 +962,8 @@ void GesturePreferencesInstance::create_children() {
     header_place_ = make_static(L"Place", SS_LEFT | SS_CENTERIMAGE);
     count_label_ = make_static(L"", SS_LEFT | SS_CENTERIMAGE);
     hint_label_ = make_static(
-        L"Соберите жест стрелками/wheel/rocker, выберите команду — затем Add New.",
+        L"1. Соберите жест стрелками / wheel / rocker.\r\n"
+        L"2. Выберите команду и нажмите Add New.",
         SS_LEFT);
 
     up_label_ = make_static(L"up", SS_CENTER);
@@ -1053,6 +1056,19 @@ void GesturePreferencesInstance::fit_to_parent() {
                  SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
+int GesturePreferencesInstance::text_width(const wchar_t* text) const {
+    HDC dc = GetDC(hwnd_);
+    if (dc == nullptr) return 0;
+
+    HGDIOBJ old_font = SelectObject(dc, font_);
+    SIZE size = {};
+    GetTextExtentPoint32W(dc, text, static_cast<int>(wcslen(text)), &size);
+    SelectObject(dc, old_font);
+    ReleaseDC(hwnd_, dc);
+
+    return static_cast<int>(size.cx);
+}
+
 void GesturePreferencesInstance::layout() {
     if (hwnd_ == nullptr || list_ == nullptr) return;
 
@@ -1099,10 +1115,67 @@ void GesturePreferencesInstance::layout() {
                                     rocker_height + scale(12) + control_height + scale(10) +
                                     checks_height;
 
+    // --- левая колонка: ровно по ширине крестовины --------------------------
+    // Остальное отдаём форме: так поля и кнопки получаются шире, как в эталоне.
+    int left_width = pad_width + scale(16);
+    if (left_width < scale(240)) left_width = scale(240);
+    left_width = clamp_int(left_width, scale(240), scale(340));
+
+    const int form_x_early = margin + left_width + scale(20);
+    const int form_width_early = width - margin - form_x_early;
+
+    // --- ширины кнопок по фактической ширине текста -------------------------
+    struct ButtonSpec {
+        HWND hwnd;
+        const wchar_t* text;
+        int min_width;
+    };
+
+    const ButtonSpec button_specs[5] = {
+        { add_button_, L"Add New", 96 },
+        { update_button_, L"Update", 72 },
+        { delete_button_, L"Delete", 72 },
+        { move_up_button_, L"Up", 60 },
+        { move_down_button_, L"Down", 60 },
+    };
+
+    const int button_padding = scale(14);
+    int button_widths[5] = {};
+    for (int i = 0; i < 5; ++i) {
+        const int needed = text_width(button_specs[i].text) + 2 * button_padding;
+        button_widths[i] = needed > scale(button_specs[i].min_width)
+            ? needed
+            : scale(button_specs[i].min_width);
+    }
+
+    // Раскладываем кнопки по рядам жадно: в ряд попадает столько кнопок,
+    // сколько реально помещается в ширину формы. Так раскладка работает
+    // при любом DPI и любой ширине страницы, а не только в 1-2 ряда.
+    int button_row_of[5] = {};
+    int button_rows = 1;
+    {
+        int used = 0;
+        for (int i = 0; i < 5; ++i) {
+            if (button_widths[i] > form_width_early) {
+                button_widths[i] = form_width_early;
+            }
+
+            if (used > 0 && used + button_widths[i] > form_width_early) {
+                ++button_rows;
+                used = 0;
+            }
+
+            button_row_of[i] = button_rows - 1;
+            used += button_widths[i] + gap;
+        }
+    }
+
     // --- правая колонка: 4 строки формы + кнопки + подсказка ----------------
     const int row_step = control_height + scale(8);
-    const int right_content_height = 4 * row_step + scale(10) + control_height + scale(6) +
-                                     label_height * 2;
+    const int hint_height = label_height * 2 + scale(4);
+    const int right_content_height = 4 * row_step + scale(10) +
+                                     button_rows * control_height + (button_rows - 1) * gap +
+                                     scale(8) + hint_height;
 
     const int lower_height = left_content_height > right_content_height ? left_content_height
                                                                         : right_content_height;
@@ -1154,9 +1227,6 @@ void GesturePreferencesInstance::layout() {
 
     // --- левая колонка ------------------------------------------------------
     // Крестовина центрируется по горизонтали в своей области.
-    int left_width = pad_width > scale(300) ? pad_width : scale(300);
-    left_width = clamp_int(left_width, scale(230), scale(360));
-
     int pad_x = margin + (left_width - (3 * cell + 2 * cell_gap)) / 2;
     if (pad_x < margin) pad_x = margin;
 
@@ -1222,8 +1292,8 @@ void GesturePreferencesInstance::layout() {
     }
 
     // --- правая колонка: редактор привязки ---------------------------------
-    const int form_x = margin + left_width + scale(20);
-    const int form_width = width - margin - form_x;
+    const int form_x = form_x_early;
+    const int form_width = form_width_early;
 
     int label_width = scale(84);
     int editor_width = form_width - label_width;
@@ -1251,28 +1321,25 @@ void GesturePreferencesInstance::layout() {
                  editor_width < scale(200) ? editor_width : scale(200), scale(160),
                  SWP_NOZORDER | SWP_NOACTIVATE);
 
-    // Кнопки управления таблицей.
+    // Кнопки управления таблицей. Ширина каждой уже посчитана по тексту
+    // (button_widths выше), ряды - жадно по доступной ширине (button_row_of).
     const int buttons_y = lower_top + 4 * row_step + scale(10);
-    const int base_widths[5] = { 96, 72, 72, 60, 60 };
-    HWND buttons[5] = { add_button_, update_button_, delete_button_, move_up_button_, move_down_button_ };
 
-    int total_width = 4 * gap;
-    for (const int base : base_widths) total_width += scale(base);
+    int row_x[8] = {};
+    for (int i = 0; i < button_rows; ++i) row_x[i] = form_x;
 
-    const double factor = form_width < total_width
-        ? static_cast<double>(form_width) / static_cast<double>(total_width)
-        : 1.0;
-
-    int x = form_x;
     for (int i = 0; i < 5; ++i) {
-        const int button_width = static_cast<int>(scale(base_widths[i]) * factor);
-        MoveWindow(buttons[i], x, buttons_y, button_width, control_height, TRUE);
-        x += button_width + gap;
+        const int row = button_row_of[i];
+        const int y = buttons_y + row * (control_height + gap);
+        MoveWindow(button_specs[i].hwnd, row_x[row], y, button_widths[i], control_height, TRUE);
+        row_x[row] += button_widths[i] + gap;
     }
 
+    const int buttons_bottom = buttons_y + button_rows * control_height + (button_rows - 1) * gap;
+
     if (hint_label_ != nullptr) {
-        MoveWindow(hint_label_, form_x, buttons_y + control_height + scale(8), form_width,
-                   label_height * 2, TRUE);
+        MoveWindow(hint_label_, form_x, buttons_bottom + scale(8), form_width,
+                   label_height * 2 + scale(4), TRUE);
     }
 }
 

@@ -44,6 +44,8 @@ private:
     bool handle(WPARAM msg, const MSLLHOOKSTRUCT& info);
     void drain_queue();
     void queue_gesture(const std::string& gesture);
+    //! Отправить обычный правый клик (после подавленного правого нажатия).
+    void replay_right_click();
 
     bool has_binding(const std::string& gesture) const;
     bool has_binding_prefix(const std::string& gesture) const;
@@ -54,6 +56,13 @@ private:
 
     GestureSettings settings_;
     GestureRecognizer recognizer_;
+
+    //! ПКМ зажата над окном foobar2000, и её события подавлены, чтобы хост
+    //! не начал штатное перетаскивание треков. Если жест не распознан,
+    //! на отпускании синтезируется обычный правый клик (контекстное меню).
+    bool suppress_right_ = false;
+    POINT right_down_point_ = {};
+    bool right_moved_ = false;
 
     bool right_down_ = false;
     bool left_down_ = false;

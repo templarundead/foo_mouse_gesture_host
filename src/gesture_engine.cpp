@@ -32,7 +32,25 @@ void register_sink_class() {
     registered = true;
 }
 
+//! Сдвиг в пикселях, после которого считаем, что пользователь начал драг.
+constexpr int kDragThreshold = 3;
+
 } // namespace
+
+void GestureEngine::replay_right_click() {
+    // Синтетические события помечаются LLMHF_INJECTED и игнорируются хуком,
+    // поэтому рекурсии нет, а foobar2000 получает обычный правый клик.
+    INPUT inputs[2] = {};
+    inputs[0].type = INPUT_MOUSE;
+    inputs[0].mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+    inputs[1].type = INPUT_MOUSE;
+    inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+
+    if (SendInput(2, inputs, sizeof(INPUT)) != 2) {
+        FB2K_console_formatter() << "Mouse Gesture Host: failed to replay the right click ("
+                                 << static_cast<unsigned long>(GetLastError()) << ")";
+    }
+}
 
 GestureEngine& GestureEngine::instance() {
     static GestureEngine engine;
@@ -77,6 +95,8 @@ void GestureEngine::reload() {
 }
 
 void GestureEngine::reset_session() {
+    suppress_right_ = false;
+    right_moved_ = false;
     right_down_ = false;
     left_down_ = false;
     session_from_right_ = true;
@@ -128,10 +148,15 @@ void GestureEngine::drain_queue() {
 bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
     if (settings_.disabled) return false;
 
+    // Свои же синтезированные события не перехватываем - иначе правый клик
+    // никогда не дойдёт до foobar2000.
+    if ((info.flags & LLMHF_INJECTED) != 0) return false;
+
     const POINT pt = info.pt;
 
     switch (msg) {
-    case WM_RBUTTONDOWN: {
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONDBLCLK: {
         // Рокер "L+R": ЛКМ уже зажата, кликаем ПКМ.
         if (left_down_ && over_main_window(pt) &&
             has_binding(token_id(Token::rocker_left_right))) {
@@ -149,9 +174,16 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
         wheel_used_ = false;
         wheel_sequence_.clear();
 
+        // Событие не отдаём хосту: иначе foobar2000 сразу начнёт своё
+        // перетаскивание треков правой кнопкой. Если жест не распознается,
+        // на отпускании отправим обычный правый клик.
+        suppress_right_ = true;
+        right_down_point_ = pt;
+        right_moved_ = false;
+
         recognizer_.set_stroke_length(settings_.stroke_length);
         recognizer_.begin(pt.x, pt.y);
-        return false;
+        return true;
     }
 
     case WM_LBUTTONDOWN: {
@@ -185,24 +217,42 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
         if (!was_down) return false;
 
         if (!session_from_right_) {
-            // Завершение рокера "L+R".
+            // Завершение рокера "L+R". Нажатие мы уже съели, поэтому съедаем
+            // и отпускание - иначе хост получил бы "up без down".
             if (rocker_armed_) {
                 rocker_armed_ = false;
                 queue_gesture(token_id(Token::rocker_left_right));
-                return true;
             }
-            return false;
+            return true;
         }
 
         bool swallow = rocker_armed_ || wheel_used_;
         rocker_armed_ = false;
 
+        const bool wheel_in_use = wheel_used_;
+
         const std::string gesture = recognizer_.canonical();
         recognizer_.cancel();
 
+        bool executed = false;
         if (!gesture.empty() && has_binding(gesture)) {
             queue_gesture(gesture);
+            executed = true;
             swallow = true;
+        }
+
+        // ПКМ была подавлена. Если это был обычный щелчок (без сдвига), а жест
+        // не сработал - возвращаем foobar2000 правый клик, чтобы открылось
+        // контекстное меню. Отпускание кнопки при этом всегда съедаем сами:
+        // иначе хост получил бы "up без down".
+        const bool was_suppressed = suppress_right_;
+        const bool was_tap = !right_moved_;
+        suppress_right_ = false;
+        right_moved_ = false;
+
+        if (was_suppressed) {
+            swallow = true;
+            if (!executed && !wheel_in_use && was_tap) replay_right_click();
         }
 
         wheel_used_ = false;
@@ -213,6 +263,19 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
     case WM_MOUSEMOVE: {
         if (right_down_ && session_from_right_ && !rocker_armed_) {
             recognizer_.move(pt.x, pt.y);
+
+            if (!right_moved_) {
+                const int dx = pt.x - right_down_point_.x;
+                const int dy = pt.y - right_down_point_.y;
+                if (dx > kDragThreshold || dx < -kDragThreshold ||
+                    dy > kDragThreshold || dy < -kDragThreshold) {
+                    right_moved_ = true;
+                }
+            }
+
+            // Пока идёт жест, движения тоже не отдаём хосту - иначе он
+            // успеет начать перетаскивание треков.
+            if (suppress_right_) return true;
         }
         return false;
     }
