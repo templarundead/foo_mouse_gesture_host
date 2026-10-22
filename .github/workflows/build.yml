@@ -112,22 +112,13 @@ jobs:
             exit 0
           }
 
-          $errors = Select-String -Path build.log -Pattern ': error [A-Z]{1,4}[0-9]{3,5}|error MSB[0-9]{4}' |
-            Select-Object -First 10
-          foreach ($entry in $errors) {
-            Write-Host "::error title=MSBuild::$($entry.Line.Trim())"
-          }
-
-          if (-not $errors) {
-            Get-Content build.log -Tail 20 | ForEach-Object { Write-Host "::error title=MSBuild tail::$_" }
-          }
-
           $lines = Get-Content build.log
 
+          # Диагностика: что именно линковалось и какие .lib реально собраны.
           $linkIndex = ($lines | Select-String -Pattern '^Link:' | Select-Object -First 1).LineNumber
           if ($linkIndex) {
-            $end = [Math]::Min($linkIndex + 25, $lines.Count - 1)
-            $chunk = ($lines[($linkIndex - 1)..$end] -join ' | ')
+            $endIndex = [Math]::Min($linkIndex + 25, $lines.Count - 1)
+            $chunk = ($lines[($linkIndex - 1)..$endIndex] -join ' | ')
             if ($chunk.Length -gt 3500) { $chunk = $chunk.Substring(0, 3500) }
             Write-Host "::error title=LinkCommand::$chunk"
           }
@@ -140,6 +131,12 @@ jobs:
             Select-Object -First 20 | ForEach-Object { $_.FullName }) -join ' || '
           if ($libs.Length -gt 3500) { $libs = $libs.Substring(0, 3500) }
           Write-Host "::error title=LibsOnDisk::$libs"
+
+          $errors = Select-String -Path build.log -Pattern ': error [A-Z]{1,4}[0-9]{3,5}|error MSB[0-9]{4}' |
+            Select-Object -First 5
+          foreach ($entry in $errors) {
+            Write-Host "::error title=MSBuild::$($entry.Line.Trim())"
+          }
 
       - name: Upload MSBuild log
         if: always()
