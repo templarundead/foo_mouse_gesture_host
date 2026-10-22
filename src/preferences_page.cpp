@@ -201,6 +201,7 @@ private:
     std::vector<ListRow> rows_;
 
     HWND count_label_ = nullptr;
+    HWND hint_label_ = nullptr;
     HFONT header_font_ = nullptr;
 
     void draw_list_row(const DRAWITEMSTRUCT& item);
@@ -482,6 +483,9 @@ void GesturePreferencesInstance::create_children() {
     header_command_ = make_static(L"Command", SS_LEFT | SS_CENTERIMAGE);
     header_place_ = make_static(L"Place", SS_LEFT | SS_CENTERIMAGE);
     count_label_ = make_static(L"", SS_LEFT | SS_CENTERIMAGE);
+    hint_label_ = make_static(
+        L"Соберите жест стрелками/wheel/rocker, выберите команду — затем Add New.",
+        SS_LEFT);
 
     up_label_ = make_static(L"up", SS_CENTER);
     down_label_ = make_static(L"down", SS_CENTER);
@@ -720,6 +724,11 @@ void GesturePreferencesInstance::layout() {
             const int button_width = static_cast<int>(scale(base_widths[i]) * factor);
             MoveWindow(buttons[i], x, buttons_y, button_width, control_height, paint);
             x += button_width + gap;
+        }
+
+        if (hint_label_ != nullptr) {
+            MoveWindow(hint_label_, form_x, buttons_y + control_height + scale(8), form_width,
+                       label_height * 2, paint);
         }
 
         const int right_bottom = buttons_y + control_height;
