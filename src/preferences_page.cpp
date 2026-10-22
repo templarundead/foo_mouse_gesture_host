@@ -26,6 +26,10 @@ enum ControlId : int {
     kIdDirDown,
     kIdDirLeft,
     kIdDirRight,
+    kIdDirUpLeft,
+    kIdDirUpRight,
+    kIdDirDownLeft,
+    kIdDirDownRight,
     kIdDirBackspace,
     kIdWheelUp,
     kIdWheelDown,
@@ -724,6 +728,10 @@ private:
     HWND dir_down_ = nullptr;
     HWND dir_left_ = nullptr;
     HWND dir_right_ = nullptr;
+    HWND dir_up_left_ = nullptr;
+    HWND dir_up_right_ = nullptr;
+    HWND dir_down_left_ = nullptr;
+    HWND dir_down_right_ = nullptr;
     HWND dir_backspace_ = nullptr;
     HWND wheel_up_ = nullptr;
     HWND wheel_down_ = nullptr;
@@ -991,6 +999,10 @@ void GesturePreferencesInstance::create_children() {
     dir_down_ = make_button(arrow("\xE2\x86\x93").c_str(), kIdDirDown);
     dir_left_ = make_button(arrow("\xE2\x86\x90").c_str(), kIdDirLeft);
     dir_right_ = make_button(arrow("\xE2\x86\x92").c_str(), kIdDirRight);
+    dir_up_left_ = make_button(arrow("\xE2\x86\x96").c_str(), kIdDirUpLeft);
+    dir_up_right_ = make_button(arrow("\xE2\x86\x97").c_str(), kIdDirUpRight);
+    dir_down_left_ = make_button(arrow("\xE2\x86\x99").c_str(), kIdDirDownLeft);
+    dir_down_right_ = make_button(arrow("\xE2\x86\x98").c_str(), kIdDirDownRight);
     dir_backspace_ = make_button(L"BS", kIdDirBackspace);
     wheel_up_ = make_button(arrow("\xE2\x86\x91").c_str(), kIdWheelUp);
     wheel_down_ = make_button(arrow("\xE2\x86\x93").c_str(), kIdWheelDown);
@@ -1098,7 +1110,8 @@ void GesturePreferencesInstance::layout() {
     const int list_top = top_margin + header_height + scale(1);
 
     // --- крестовина (D-Pad) -------------------------------------------------
-    // Сетка 3x3: [←][BS][→] в одной строке, ↑ над BS, ↓ под BS.
+    // Диагонали занимают углы: UL/UR находятся выше ↑, а DL/DR — ниже ↓.
+    // Центральный ряд по-прежнему: [←][BS][→].
     const int cell = scale(38);
     const int cell_gap = scale(4);
 
@@ -1111,9 +1124,9 @@ void GesturePreferencesInstance::layout() {
     if (side_right < scale(24)) side_right = scale(24);
     const int label_gap = scale(6);
 
-    // Высота крестовины: подпись up + ↑ + ряд + ↓ + подпись down.
+    // Нижние диагонали делят строку с подписью down, но высоту задаёт кнопка.
     const int pad_height = label_height + control_height + cell_gap + control_height + cell_gap +
-                           control_height + label_height;
+                           control_height + control_height;
 
     // --- wheel / rocker / stroke / галочки ----------------------------------
     const int wheel_height = control_height + label_height;          // кнопки + подписи up/down
@@ -1269,7 +1282,9 @@ void GesturePreferencesInstance::layout() {
     const int down_x = up_x;
 
     int y = lower_top;
+    MoveWindow(dir_up_left_, left_x, y, cell, control_height, TRUE);
     MoveWindow(up_label_, up_x, y, cell, label_height, TRUE);
+    MoveWindow(dir_up_right_, right_x, y, cell, control_height, TRUE);
     y += label_height;
     MoveWindow(dir_up_, up_x, y, cell, control_height, TRUE);
     y += control_height + cell_gap;
@@ -1283,8 +1298,10 @@ void GesturePreferencesInstance::layout() {
 
     MoveWindow(dir_down_, down_x, y, cell, control_height, TRUE);
     y += control_height;
+    MoveWindow(dir_down_left_, left_x, y, cell, control_height, TRUE);
     MoveWindow(down_label_, down_x, y, cell, label_height, TRUE);
-    y += label_height + pad_to_wheel_gap;
+    MoveWindow(dir_down_right_, right_x, y, cell, control_height, TRUE);
+    y += control_height + pad_to_wheel_gap;
 
     // --- wheel: подпись слева, кнопки в один ряд, подписи up/down под ними --
     MoveWindow(wheel_label_, margin, y, scale(52), control_height, TRUE);
@@ -1981,6 +1998,10 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
         case kIdDirDown: if (code == BN_CLICKED) on_direction(Token::down); return 0;
         case kIdDirLeft: if (code == BN_CLICKED) on_direction(Token::left); return 0;
         case kIdDirRight: if (code == BN_CLICKED) on_direction(Token::right); return 0;
+        case kIdDirUpLeft: if (code == BN_CLICKED) on_direction(Token::up_left); return 0;
+        case kIdDirUpRight: if (code == BN_CLICKED) on_direction(Token::up_right); return 0;
+        case kIdDirDownLeft: if (code == BN_CLICKED) on_direction(Token::down_left); return 0;
+        case kIdDirDownRight: if (code == BN_CLICKED) on_direction(Token::down_right); return 0;
         case kIdDirBackspace: if (code == BN_CLICKED) on_backspace(); return 0;
 
         case kIdWheelUp: if (code == BN_CLICKED) on_direction(Token::wheel_up); return 0;
