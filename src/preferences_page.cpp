@@ -186,8 +186,25 @@ private:
     HWND header_command_ = nullptr;
     HWND header_place_ = nullptr;
 
-    //! Удалось ли включить group view (иначе тип жеста пишется в первую колонку).
-    bool groups_enabled_ = false;
+    //! Строка таблицы: разделитель группы либо привязка.
+    //! Таблица рисуется вручную (LVS_OWNERDRAWFIXED): themed ListView в тёмной
+    //! теме foobar2000 рисует текст цветом темы и строки становятся невидимыми.
+    struct ListRow {
+        bool is_header = false;
+        int binding_index = -1;
+        std::wstring header;
+        std::wstring gesture;
+        std::wstring command;
+        std::wstring place;
+    };
+
+    std::vector<ListRow> rows_;
+
+    HWND count_label_ = nullptr;
+    HFONT header_font_ = nullptr;
+
+    void draw_list_row(const DRAWITEMSTRUCT& item);
+    void measure_list_row(MEASUREITEMSTRUCT& item) const;
 
     HWND up_label_ = nullptr;
     HWND down_label_ = nullptr;
@@ -242,6 +259,7 @@ private:
     bool dirty_ = false;
     bool updating_ = false;
     bool diagnostics_logged_ = false;
+    bool list_diagnostics_logged_ = false;
 
     preferences_page_callback::ptr callback_;
     fb2k::CCoreDarkModeHooks dark_mode_;
@@ -300,6 +318,7 @@ GesturePreferencesInstance::~GesturePreferencesInstance() {
     }
     if (background_brush_ != nullptr) DeleteObject(background_brush_);
     if (control_brush_ != nullptr) DeleteObject(control_brush_);
+    if (header_font_ != nullptr) DeleteObject(header_font_);
     if (owns_font_ && font_ != nullptr) DeleteObject(font_);
 }
 
@@ -419,9 +438,14 @@ void GesturePreferencesInstance::create_children() {
     // Заголовок ListView не используем (LVS_NOCOLUMNHEADER): в тёмной теме
     // foobar2000 он остаётся белым, а текст на нём не читается. Вместо него
     // над таблицей стоят обычные Static-контролы.
+    //
+    // Строки рисуем сами (LVS_OWNERDRAWFIXED): встроенная отрисовка themed
+    // ListView в тёмной теме использует цвет текста темы, из-за чего строки
+    // были не видны на тёмном фоне.
     list_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL |
-                                LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | LVS_NOCOLUMNHEADER,
+                                LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | LVS_NOCOLUMNHEADER |
+                                LVS_OWNERDRAWFIXED,
                             0, 0, 200, 120, hwnd_,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdList)), instance, nullptr);
     if (list_ == nullptr) {
@@ -429,19 +453,25 @@ void GesturePreferencesInstance::create_children() {
                                  << static_cast<unsigned long>(GetLastError()) << ")";
     } else {
         if (font_ != nullptr) SendMessageW(list_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-        ListView_SetExtendedListViewStyle(list_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+        ListView_SetExtendedListViewStyle(list_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
         add_list_column(0, L"Gesture", scale(160));
         add_list_column(1, L"Command", scale(320));
         add_list_column(2, L"Place", scale(120));
+    }
 
-        // group view поддерживается не всеми версиями comctl32; если не вышло -
-        // тип жеста будет дописан в первую колонку, но строки всё равно видны.
-        groups_enabled_ = ListView_EnableGroupView(list_, TRUE) != 0;
+    // Жирный шрифт для заголовков групп внутри таблицы.
+    if (font_ != nullptr) {
+        LOGFONTW log_font = {};
+        if (GetObjectW(font_, sizeof(log_font), &log_font) == sizeof(log_font)) {
+            log_font.lfWeight = FW_SEMIBOLD;
+            header_font_ = CreateFontIndirectW(&log_font);
+        }
     }
 
     header_gesture_ = make_static(L"Gesture", SS_LEFT | SS_CENTERIMAGE);
     header_command_ = make_static(L"Command", SS_LEFT | SS_CENTERIMAGE);
     header_place_ = make_static(L"Place", SS_LEFT | SS_CENTERIMAGE);
+    count_label_ = make_static(L"", SS_LEFT | SS_CENTERIMAGE);
 
     up_label_ = make_static(L"up", SS_CENTER);
     down_label_ = make_static(L"down", SS_CENTER);
@@ -562,8 +592,8 @@ void GesturePreferencesInstance::layout() {
         int check_step;
     };
 
-    const Metrics spacious = { scale(16), scale(8), scale(14), scale(12), scale(24) };
-    const Metrics compact  = { scale(10), scale(4), scale(8),  scale(6),  scale(20) };
+    const Metrics spacious = { scale(12), scale(6), scale(10), scale(8), scale(24) };
+    const Metrics compact  = { scale(8),  scale(4), scale(6),  scale(4), scale(20) };
 
     const int row_step = control_height + scale(8);
 
@@ -614,11 +644,22 @@ void GesturePreferencesInstance::layout() {
         MoveWindow(stroke_spin_, margin + scale(155), y, scale(16), control_height - scale(2), paint);
         y += control_height + metrics.gap_stroke;
 
-        // --- галочки (в столбик: на узкой странице они больше не наезжают друг на друга) ---
+        // --- галочки ---
+        // Как в эталоне: "Disable mouse gesture" и "Represent direction by the alphabet"
+        // друг под другом, а "Execute only the first command" - справа от второй,
+        // если по ширине хватает места; иначе всё в столбик.
+        const bool wide_checks = width >= scale(860);
         MoveWindow(disable_check_, margin, y, scale(260), scale(18), paint);
-        MoveWindow(alphabet_check_, margin, y + metrics.check_step, scale(300), scale(18), paint);
-        MoveWindow(first_only_check_, margin, y + 2 * metrics.check_step, scale(300), scale(18), paint);
-        y += scale(18) + 2 * metrics.check_step;
+        MoveWindow(alphabet_check_, margin, y + metrics.check_step, scale(280), scale(18), paint);
+
+        if (wide_checks) {
+            MoveWindow(first_only_check_, margin + scale(288), y + metrics.check_step,
+                       scale(260), scale(18), paint);
+            y += scale(18) + metrics.check_step;
+        } else {
+            MoveWindow(first_only_check_, margin, y + 2 * metrics.check_step, scale(280), scale(18), paint);
+            y += scale(18) + 2 * metrics.check_step;
+        }
 
         // --- правая колонка: редактор привязки ---
         int left_width = width * 38 / 100;
@@ -725,6 +766,11 @@ void GesturePreferencesInstance::layout() {
     MoveWindow(header_place_, header_x + column_gesture + column_command, margin,
                width - margin - (header_x + column_gesture + column_command), header_height, TRUE);
 
+    // Счётчик привязок - слева под таблицей.
+    if (count_label_ != nullptr) {
+        MoveWindow(count_label_, margin, list_top + list_height + scale(1), scale(260), scale(16), TRUE);
+    }
+
     // Финальная расстановка нижнего блока на вычисленном месте.
     place_lower(top, *metrics, true);
 }
@@ -759,10 +805,20 @@ void GesturePreferencesInstance::apply_list_theme() {
     const bool dark = dark_mode_ ? true : false;
     const COLORREF list_background = dark ? RGB(32, 32, 32) : GetSysColor(COLOR_WINDOW);
 
+    // Строки рисуются вручную (WM_DRAWITEM), поэтому цвета текста темы
+    // больше не важны - важно только не дать теме закрасить фон.
+    // Строки рисуются вручную (WM_DRAWITEM), но цвета всё равно выставляем:
+    // если хост-тема вмешается в отрисовку, текст останется читаемым.
     ListView_SetBkColor(list_, list_background);
     ListView_SetTextBkColor(list_, list_background);
     ListView_SetTextColor(list_, dark ? RGB(230, 230, 230) : GetSysColor(COLOR_WINDOWTEXT));
-    SetWindowTheme(list_, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+
+    if (dark) {
+        SetWindowTheme(list_, L"", L"");
+    } else {
+        SetWindowTheme(list_, L"Explorer", nullptr);
+    }
+
     InvalidateRect(list_, nullptr, TRUE);
 }
 
@@ -787,6 +843,114 @@ void GesturePreferencesInstance::load_from_settings() {
     updating_ = false;
 }
 
+void GesturePreferencesInstance::measure_list_row(MEASUREITEMSTRUCT& item) const {
+    // WM_MEASUREITEM приходит до заполнения rows_, поэтому высоту строки
+    // считаем только по шрифтам, без обращения к модели.
+    HDC dc = GetDC(hwnd_);
+    int text_height = scale(16);
+    if (dc != nullptr) {
+        HGDIOBJ old_font = SelectObject(dc, font_);
+        TEXTMETRICW metrics = {};
+        if (GetTextMetricsW(dc, &metrics)) {
+            text_height = metrics.tmHeight;
+        }
+        SelectObject(dc, old_font);
+        ReleaseDC(hwnd_, dc);
+    }
+
+    item.itemHeight = static_cast<UINT>(text_height + scale(9));
+}
+
+void GesturePreferencesInstance::draw_list_row(const DRAWITEMSTRUCT& item) {
+    if (item.itemID == static_cast<UINT>(-1)) return;
+    if (item.itemID >= rows_.size()) return;
+
+    const ListRow& row = rows_[static_cast<std::size_t>(item.itemID)];
+    const bool dark = dark_mode_ ? true : false;
+
+    const COLORREF background = dark ? RGB(32, 32, 32) : GetSysColor(COLOR_WINDOW);
+    const COLORREF text = dark ? RGB(230, 230, 230) : GetSysColor(COLOR_WINDOWTEXT);
+    const COLORREF muted = dark ? RGB(150, 150, 150) : GetSysColor(COLOR_GRAYTEXT);
+    const COLORREF highlight = dark ? RGB(0, 90, 158) : GetSysColor(COLOR_HIGHLIGHT);
+    const COLORREF highlight_text = dark ? RGB(255, 255, 255) : GetSysColor(COLOR_HIGHLIGHTTEXT);
+
+    HDC dc = item.hDC;
+    RECT rc = item.rcItem;
+
+    // В report view rcItem может покрывать только первую колонку - растягиваем
+    // строку до правого края клиентской области, иначе остальные колонки
+    // окажутся вне области отрисовки и текст обрежется.
+    RECT client = {};
+    if (list_ != nullptr && GetClientRect(list_, &client) && client.right > rc.right) {
+        rc.right = client.right;
+    }
+
+    const bool selected = (item.itemState & ODS_SELECTED) != 0 && !row.is_header;
+
+    HBRUSH brush = CreateSolidBrush(row.is_header
+                                        ? (dark ? RGB(45, 45, 45) : GetSysColor(COLOR_BTNFACE))
+                                        : (selected ? highlight : background));
+    FillRect(dc, &rc, brush);
+    DeleteObject(brush);
+
+    SetBkMode(dc, TRANSPARENT);
+
+    if (row.is_header) {
+        HGDIOBJ old_font = SelectObject(dc, header_font_ != nullptr ? header_font_ : font_);
+        SetTextColor(dc, dark ? RGB(240, 240, 240) : GetSysColor(COLOR_WINDOWTEXT));
+
+        RECT text_rc = rc;
+        text_rc.left += scale(6);
+        text_rc.right -= scale(6);
+
+        // Заголовок группы; справа - горизонтальная линия-разделитель.
+        const SIZE extent = [&] {
+            SIZE size = {};
+            GetTextExtentPoint32W(dc, row.header.c_str(), static_cast<int>(row.header.size()), &size);
+            return size;
+        }();
+
+        DrawTextW(dc, row.header.c_str(), static_cast<int>(row.header.size()), &text_rc,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        const int line_y = (rc.top + rc.bottom) / 2;
+        const int line_x = text_rc.left + extent.cx + scale(10);
+        if (line_x < rc.right - scale(6)) {
+            HPEN pen = CreatePen(PS_SOLID, 1, dark ? RGB(90, 90, 90) : GetSysColor(COLOR_3DSHADOW));
+            HGDIOBJ old_pen = SelectObject(dc, pen);
+            MoveToEx(dc, line_x, line_y, nullptr);
+            LineTo(dc, rc.right - scale(6), line_y);
+            SelectObject(dc, old_pen);
+            DeleteObject(pen);
+        }
+
+        SelectObject(dc, old_font);
+        return;
+    }
+
+    HGDIOBJ old_font = SelectObject(dc, font_);
+
+    const std::wstring* cells[3] = { &row.gesture, &row.command, &row.place };
+
+    int left = rc.left;
+    for (int column = 0; column < 3; ++column) {
+        const int column_width = ListView_GetColumnWidth(list_, column);
+
+        RECT cell_rc = rc;
+        cell_rc.left = left + scale(6);
+        cell_rc.right = left + column_width - scale(6);
+        left += column_width;
+
+        if (cell_rc.right <= cell_rc.left) continue;
+
+        SetTextColor(dc, selected ? highlight_text : (column == 2 ? muted : text));
+        DrawTextW(dc, cells[column]->c_str(), static_cast<int>(cells[column]->size()), &cell_rc,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    }
+
+    SelectObject(dc, old_font);
+}
+
 void GesturePreferencesInstance::refresh_list() {
     if (list_ == nullptr) return;
 
@@ -794,71 +958,46 @@ void GesturePreferencesInstance::refresh_list() {
     updating_ = true;
 
     const int previous = selected_row();
-    ListView_DeleteAllItems(list_);
-    ListView_RemoveAllGroups(list_);
 
-    int last_group = 0;
+    rows_.clear();
+    ListView_DeleteAllItems(list_);
+
+    const wchar_t* previous_group_title = nullptr;
+
     for (std::size_t i = 0; i < settings_.bindings.size(); ++i) {
         const GestureBinding& binding = settings_.bindings[i];
 
-        int group = kGroupGesture;
-        switch (categorize_gesture(binding.gesture)) {
-        case GestureCategory::wheel_up: group = kGroupWheelUp; break;
-        case GestureCategory::wheel_down: group = kGroupWheelDown; break;
-        case GestureCategory::rocker: group = kGroupRocker; break;
-        default: group = kGroupGesture; break;
-        }
-
         const wchar_t* group_title = L"Gesture";
-        switch (group) {
-        case kGroupWheelUp: group_title = L"Wheel Up"; break;
-        case kGroupWheelDown: group_title = L"Wheel Down"; break;
-        case kGroupRocker: group_title = L"Rocker"; break;
+        switch (categorize_gesture(binding.gesture)) {
+        case GestureCategory::wheel_up: group_title = L"Wheel Up"; break;
+        case GestureCategory::wheel_down: group_title = L"Wheel Down"; break;
+        case GestureCategory::rocker: group_title = L"Rocker"; break;
         default: group_title = L"Gesture"; break;
         }
 
-        if (groups_enabled_ && group != last_group) {
-            LVGROUP lvgroup = {};
-            lvgroup.cbSize = sizeof(lvgroup);
-            lvgroup.mask = LVGF_HEADER | LVGF_GROUPID | LVGF_ALIGN;
-            lvgroup.iGroupId = group;
-            lvgroup.uAlign = LVGA_HEADER_LEFT;
-            lvgroup.pszHeader = const_cast<LPWSTR>(group_title);
-            if (ListView_InsertGroup(list_, -1, &lvgroup) < 0) {
-                // Группы не поддерживаются - дальше показываем плоский список.
-                groups_enabled_ = false;
-            }
-
-            last_group = group;
+        // Заголовок группы - отдельная (не выбираемая) строка таблицы.
+        if (previous_group_title == nullptr || wcscmp(previous_group_title, group_title) != 0) {
+            ListRow header;
+            header.is_header = true;
+            header.header = group_title;
+            rows_.push_back(std::move(header));
+            previous_group_title = group_title;
         }
 
-        std::wstring gesture_text = wide_from_utf8(format_gesture(binding.gesture, settings_.alphabet));
-        if (!groups_enabled_) {
-            // Плоский режим: тип жеста виден прямо в первой колонке.
-            if (group != kGroupGesture) {
-                gesture_text = std::wstring(group_title) + L": " + gesture_text;
-            }
-        }
+        ListRow row;
+        row.binding_index = static_cast<int>(i);
+        row.gesture = wide_from_utf8(format_gesture(binding.gesture, settings_.alphabet));
+        row.command = wide_from_utf8(std::string(group_label(binding.group)) + ": " + binding.command_path);
+        row.place = wide_from_utf8(place_label(binding.place));
+        rows_.push_back(std::move(row));
+    }
 
-        const std::wstring command_text =
-            wide_from_utf8(std::string(group_label(binding.group)) + ": " + binding.command_path);
-        const std::wstring place_text = wide_from_utf8(place_label(binding.place));
-
+    for (std::size_t i = 0; i < rows_.size(); ++i) {
         LVITEMW item = {};
-        item.mask = LVIF_TEXT | LVIF_PARAM;
+        item.mask = LVIF_PARAM;
         item.iItem = static_cast<int>(i);
-        if (groups_enabled_) {
-            item.mask |= LVIF_GROUPID;
-            item.iGroupId = group;
-        }
         item.lParam = static_cast<LPARAM>(i);
-        item.pszText = const_cast<LPWSTR>(gesture_text.c_str());
-
-        const int inserted = ListView_InsertItem(list_, &item);
-        if (inserted >= 0) {
-            ListView_SetItemText(list_, inserted, 1, const_cast<LPWSTR>(command_text.c_str()));
-            ListView_SetItemText(list_, inserted, 2, const_cast<LPWSTR>(place_text.c_str()));
-        }
+        ListView_InsertItem(list_, &item);
     }
 
     if (previous >= 0 && previous < static_cast<int>(settings_.bindings.size())) {
@@ -866,14 +1005,16 @@ void GesturePreferencesInstance::refresh_list() {
     }
     updating_ = was_updating;
 
-    // Страховка: если group view включён, но строки не отрисовались
-    // (встречается на некоторых сборках comctl32), перерисовываем плоским списком.
-    if (groups_enabled_ && !settings_.bindings.empty() && ListView_GetItemCount(list_) == 0) {
-        groups_enabled_ = false;
-        ListView_EnableGroupView(list_, FALSE);
-        ListView_RemoveAllGroups(list_);
-        refresh_list();
-        return;
+    if (count_label_ != nullptr) {
+        const std::wstring text = L"Всего привязок: " + std::to_wstring(settings_.bindings.size());
+        SetWindowTextW(count_label_, text.c_str());
+    }
+
+    if (!list_diagnostics_logged_) {
+        list_diagnostics_logged_ = true;
+        FB2K_console_formatter() << "Mouse Gesture Host: table rows " << static_cast<t_size>(rows_.size())
+                                 << " (items in list: " << static_cast<t_size>(ListView_GetItemCount(list_))
+                                 << "), bindings " << static_cast<t_size>(settings_.bindings.size());
     }
 
     update_buttons();
@@ -1007,8 +1148,14 @@ void GesturePreferencesInstance::on_add() {
         return;
     }
 
-    const int command_index = ComboBox_GetCurSel(command_combo_);
-    if (catalog_.empty() || command_index < 0 || command_index >= static_cast<int>(catalog_.size())) {
+    // Список команд мог не построиться при открытии страницы (меню ещё не готово) -
+    // пробуем ещё раз, прежде чем отказывать пользователю.
+    if (catalog_.empty()) refresh_command_list();
+
+    int command_index = ComboBox_GetCurSel(command_combo_);
+    if (command_index < 0 && !catalog_.empty()) command_index = 0;
+
+    if (catalog_.empty() || command_index >= static_cast<int>(catalog_.size())) {
         MessageBoxW(hwnd_,
                     L"Не выбрана команда.\n\n"
                     L"Для групп context(...) выделите треки в плейлисте (список команд "
@@ -1028,6 +1175,10 @@ void GesturePreferencesInstance::on_add() {
 
     const int last = static_cast<int>(settings_.bindings.size()) - 1;
     select_binding(last);
+
+    FB2K_console_formatter() << "Mouse Gesture Host: added gesture \"" << binding.gesture.c_str()
+                             << "\" -> " << binding.command_path.c_str()
+                             << " (" << static_cast<t_size>(settings_.bindings.size()) << " total)";
 
     update_buttons();
     set_dirty(true);
@@ -1164,21 +1315,15 @@ std::string GesturePreferencesInstance::current_place_id() const {
 }
 
 int GesturePreferencesInstance::binding_index_from_display(int display_row) const {
-    if (list_ == nullptr || display_row < 0) return -1;
-
-    LVITEMW item = {};
-    item.mask = LVIF_PARAM;
-    item.iItem = display_row;
-    if (!ListView_GetItem(list_, &item)) return -1;
-    return static_cast<int>(item.lParam);
+    if (display_row < 0 || display_row >= static_cast<int>(rows_.size())) return -1;
+    return rows_[static_cast<std::size_t>(display_row)].binding_index;
 }
 
 int GesturePreferencesInstance::display_row_from_binding_index(int binding_index) const {
-    if (list_ == nullptr || binding_index < 0) return -1;
+    if (binding_index < 0) return -1;
 
-    const int count = ListView_GetItemCount(list_);
-    for (int row = 0; row < count; ++row) {
-        if (binding_index_from_display(row) == binding_index) return row;
+    for (std::size_t i = 0; i < rows_.size(); ++i) {
+        if (rows_[i].binding_index == binding_index) return static_cast<int>(i);
     }
     return -1;
 }
@@ -1271,6 +1416,24 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
         return reinterpret_cast<LRESULT>(control_brush_);
     }
 
+    case WM_MEASUREITEM: {
+        auto* measure = reinterpret_cast<MEASUREITEMSTRUCT*>(lparam);
+        if (measure != nullptr && measure->CtlID == kIdList) {
+            measure_list_row(*measure);
+            return TRUE;
+        }
+        break;
+    }
+
+    case WM_DRAWITEM: {
+        auto* draw = reinterpret_cast<DRAWITEMSTRUCT*>(lparam);
+        if (draw != nullptr && draw->CtlID == kIdList) {
+            draw_list_row(*draw);
+            return TRUE;
+        }
+        break;
+    }
+
     case WM_COMMAND: {
         const int id = LOWORD(wparam);
         const int code = HIWORD(wparam);
@@ -1316,7 +1479,17 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
 
     case WM_NOTIFY: {
         auto* header = reinterpret_cast<NMHDR*>(lparam);
-        if (header != nullptr && header->idFrom == kIdList && header->code == LVN_ITEMCHANGED) {
+        if (header == nullptr || header->idFrom != kIdList) break;
+
+        if (header->code == LVN_ITEMCHANGING) {
+            // Строки-заголовки групп не выбираются.
+            auto* list_view = reinterpret_cast<NMLISTVIEW*>(lparam);
+            if ((list_view->uNewState & LVIS_SELECTED) != 0 &&
+                list_view->iItem >= 0 && list_view->iItem < static_cast<int>(rows_.size()) &&
+                rows_[static_cast<std::size_t>(list_view->iItem)].is_header) {
+                return TRUE;
+            }
+        } else if (header->code == LVN_ITEMCHANGED) {
             auto* list_view = reinterpret_cast<NMLISTVIEW*>(lparam);
             if ((list_view->uNewState & LVIS_SELECTED) != 0 &&
                 (list_view->uOldState & LVIS_SELECTED) == 0) {
