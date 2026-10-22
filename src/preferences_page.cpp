@@ -485,7 +485,7 @@ void GestureListControl::paint(HDC target, const RECT& client) {
         empty.left += scale(10);
         SetBkMode(memory_dc, TRANSPARENT);
         SetTextColor(memory_dc, muted_);
-        DrawTextW(memory_dc, L"Привязок нет - нажмите Reset.", -1, &empty,
+        DrawTextW(memory_dc, L"No bindings - click Reset.", -1, &empty,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
@@ -962,9 +962,9 @@ void GesturePreferencesInstance::create_children() {
     header_place_ = make_static(L"Place", SS_LEFT | SS_CENTERIMAGE);
     count_label_ = make_static(L"", SS_LEFT | SS_CENTERIMAGE);
     hint_label_ = make_static(
-        L"1. Соберите жест стрелками / wheel / rocker.\r\n"
-        L"2. Выберите команду, нажмите Add New и Apply.\r\n"
-        L"Rocker: R+L = держим ПКМ, кликаем ЛКМ; L+R — наоборот.",
+        L"1. Build a gesture using the buttons on the left.\r\n"
+        L"2. Select a command and click Add New, then Apply.\r\n"
+        L"R+L: hold RMB and click LMB; L+R: vice versa.",
         SS_LEFT);
 
     up_label_ = make_static(L"up", SS_CENTER);
@@ -994,6 +994,9 @@ void GesturePreferencesInstance::create_children() {
     gesture_edit_ = make_edit(kIdGestureEdit, ES_READONLY);
     group_combo_ = make_combo(kIdGroupCombo);
     command_combo_ = make_combo(kIdCommandCombo);
+    // Не растягиваем выпадающий список на 30 строк: компактный список
+    // быстрее перерисовывается при перетаскивании ползунка.
+    ComboBox_SetMinVisible(command_combo_, 12);
     place_combo_ = make_combo(kIdPlaceCombo);
 
     add_button_ = make_button(L"Add New", kIdAdd);
@@ -1081,12 +1084,14 @@ void GesturePreferencesInstance::layout() {
 
     // --- общие метрики (в единицах 96 DPI, масштабируются через scale()) ---
     const int margin = scale(10);
+    const int top_margin = scale(6);
     const int gap = scale(6);
     const int label_height = scale(14);
-    const int control_height = scale(24);
-    const int header_height = scale(18);
+    const int control_height = scale(22);
+    const int header_height = scale(16);
 
-    const int list_top = margin + header_height + scale(2);
+    // Таблица начинается выше; высвобожденное место отдаём её строкам.
+    const int list_top = top_margin + header_height + scale(1);
 
     // --- крестовина (D-Pad) -------------------------------------------------
     // Сетка 3x3: [←][BS][→] в одной строке, ↑ над BS, ↓ под BS.
@@ -1110,16 +1115,29 @@ void GesturePreferencesInstance::layout() {
     const int wheel_height = control_height + label_height;          // кнопки + подписи up/down
     const int rocker_height = control_height;
 
-    // На широкой странице вторая и третья галочки стоят в одном ряду,
-    // на узкой - в столбик (тогда рядов три).
-    const bool two_columns = (width - 2 * margin) >= scale(720);
+    // Вторая и третья галочки делят строку, если им действительно хватает
+    // ширины для текста. Это освобождает ещё один ряд для таблицы.
+    const int check_height = scale(18);
+    const int check_gap = scale(4);
+    const int check_row_step = check_height + check_gap;
+    const int alphabet_check_width = text_width(L"Represent direction by the alphabet") + scale(30);
+    const int first_only_check_width = text_width(L"Execute only the first command") + scale(30);
+    const int widest_check = alphabet_check_width > first_only_check_width
+        ? alphabet_check_width : first_only_check_width;
+    const bool two_columns = 2 * widest_check + gap <= width - 2 * margin;
     const int checks_rows = two_columns ? 2 : 3;
-    const int checks_height = scale(18) * checks_rows + scale(6) * (checks_rows - 1);
+    const int checks_height = check_height * checks_rows + check_gap * (checks_rows - 1);
+
+    // Компактные, но одинаковые вертикальные интервалы между нижними группами.
+    const int pad_to_wheel_gap = scale(6);
+    const int wheel_to_rocker_gap = scale(4);
+    const int rocker_to_stroke_gap = scale(6);
+    const int stroke_to_checks_gap = scale(6);
 
     // Левая колонка: крестовина + wheel + rocker + stroke + галочки.
-    const int left_content_height = pad_height + scale(10) + wheel_height + scale(8) +
-                                    rocker_height + scale(12) + control_height + scale(10) +
-                                    checks_height;
+    const int left_content_height = pad_height + pad_to_wheel_gap + wheel_height + wheel_to_rocker_gap +
+                                    rocker_height + rocker_to_stroke_gap + control_height +
+                                    stroke_to_checks_gap + checks_height;
 
     // --- левая колонка: ровно по ширине крестовины --------------------------
     // Подпись "left" начинается ровно на margin - на одной вертикали с
@@ -1184,21 +1202,21 @@ void GesturePreferencesInstance::layout() {
     }
 
     // --- правая колонка: 4 строки формы + кнопки + подсказка ----------------
-    const int row_step = control_height + scale(8);
-    const int hint_height = label_height * 3 + scale(6);
-    const int right_content_height = 4 * row_step + scale(10) +
+    const int row_step = control_height + scale(6);
+    const int hint_height = label_height * 3 + scale(4);
+    const int right_content_height = 4 * row_step + scale(8) +
                                      button_rows * control_height + (button_rows - 1) * gap +
-                                     scale(8) + hint_height;
+                                     scale(6) + hint_height;
 
     const int lower_height = left_content_height > right_content_height ? left_content_height
                                                                         : right_content_height;
 
     // --- подпись "Всего привязок" над крестовиной ---------------------------
     const int count_height = scale(16);
-    const int count_gap = scale(6);
+    const int count_gap = scale(4);
 
     const int count_top = height - margin - lower_height - count_gap - count_height;
-    int list_height = count_top - scale(8) - list_top;
+    int list_height = count_top - scale(6) - list_top;
 
     const int min_list_height = scale(80);
     if (list_height < min_list_height) list_height = min_list_height;
@@ -1228,9 +1246,9 @@ void GesturePreferencesInstance::layout() {
 
     // Заголовки колонок (Static-контролы над таблицей).
     const int header_x = margin + scale(6);
-    MoveWindow(header_gesture_, header_x, margin, column_gesture, header_height, TRUE);
-    MoveWindow(header_command_, header_x + column_gesture, margin, column_command, header_height, TRUE);
-    MoveWindow(header_place_, header_x + column_gesture + column_command, margin,
+    MoveWindow(header_gesture_, header_x, top_margin, column_gesture, header_height, TRUE);
+    MoveWindow(header_command_, header_x + column_gesture, top_margin, column_command, header_height, TRUE);
+    MoveWindow(header_place_, header_x + column_gesture + column_command, top_margin,
                width - margin - (header_x + column_gesture + column_command), header_height, TRUE);
 
     // Подпись "Всего привязок" - отдельный Static, над крестовиной.
@@ -1262,7 +1280,7 @@ void GesturePreferencesInstance::layout() {
     MoveWindow(dir_down_, down_x, y, cell, control_height, TRUE);
     y += control_height;
     MoveWindow(down_label_, down_x, y, cell, label_height, TRUE);
-    y += label_height + scale(10);
+    y += label_height + pad_to_wheel_gap;
 
     // --- wheel: подпись слева, кнопки в один ряд, подписи up/down под ними --
     MoveWindow(wheel_label_, margin, y, scale(52), control_height, TRUE);
@@ -1271,33 +1289,37 @@ void GesturePreferencesInstance::layout() {
     MoveWindow(wheel_down_, wheel_x + scale(32), y, scale(28), control_height, TRUE);
     MoveWindow(wheel_up_label_, wheel_x, y + control_height, scale(28), label_height, TRUE);
     MoveWindow(wheel_down_label_, wheel_x + scale(32), y + control_height, scale(28), label_height, TRUE);
-    y += wheel_height + scale(8);
+    y += wheel_height + wheel_to_rocker_gap;
 
     // --- rocker: подпись слева, кнопки в один ряд ---------------------------
     MoveWindow(rocker_label_, margin, y, scale(52), control_height, TRUE);
     const int rocker_x = margin + scale(56);
     MoveWindow(rocker_rl_, rocker_x, y, scale(48), control_height, TRUE);
     MoveWindow(rocker_lr_, rocker_x + scale(52), y, scale(48), control_height, TRUE);
-    y += rocker_height + scale(12);
+    y += rocker_height + rocker_to_stroke_gap;
 
     // --- длина штриха -------------------------------------------------------
     MoveWindow(stroke_label_, margin, y, scale(96), control_height, TRUE);
     MoveWindow(stroke_edit_, margin + scale(100), y, scale(56), control_height - scale(2), TRUE);
     MoveWindow(stroke_spin_, margin + scale(157), y, scale(16), control_height - scale(2), TRUE);
-    y += control_height + scale(10);
+    y += control_height + stroke_to_checks_gap;
 
     // --- галочки ------------------------------------------------------------
     const int checks_width = width - 2 * margin;
 
-    MoveWindow(disable_check_, margin, y, scale(280), scale(18), TRUE);
-    MoveWindow(alphabet_check_, margin, y + scale(24), scale(300), scale(18), TRUE);
+    MoveWindow(disable_check_, margin, y, scale(280), check_height, TRUE);
 
     if (two_columns) {
-        MoveWindow(first_only_check_, margin + scale(320), y + scale(24), scale(300), scale(18), TRUE);
-        y += scale(18) + scale(24);
+        const int check_column_width = (checks_width - gap) / 2;
+        MoveWindow(alphabet_check_, margin, y + check_row_step,
+                   check_column_width, check_height, TRUE);
+        MoveWindow(first_only_check_, margin + check_column_width + gap, y + check_row_step,
+                   check_column_width, check_height, TRUE);
+        y += check_row_step + check_height;
     } else {
-        MoveWindow(first_only_check_, margin, y + scale(48), scale(300), scale(18), TRUE);
-        y += scale(18) + scale(48);
+        MoveWindow(alphabet_check_, margin, y + check_row_step, checks_width, check_height, TRUE);
+        MoveWindow(first_only_check_, margin, y + 2 * check_row_step, checks_width, check_height, TRUE);
+        y += 2 * check_row_step + check_height;
     }
 
     // --- правая колонка: редактор привязки ---------------------------------
@@ -1341,7 +1363,7 @@ void GesturePreferencesInstance::layout() {
 
     // Кнопки управления таблицей. Ширина каждой уже посчитана по тексту
     // (button_widths выше), ряды - жадно по доступной ширине (button_row_of).
-    const int buttons_y = lower_top + 4 * row_step + scale(10);
+    const int buttons_y = lower_top + 4 * row_step + scale(8);
 
     int row_x[8] = {};
     for (int i = 0; i < button_rows; ++i) row_x[i] = form_x;
@@ -1356,7 +1378,7 @@ void GesturePreferencesInstance::layout() {
     const int buttons_bottom = buttons_y + button_rows * control_height + (button_rows - 1) * gap;
 
     if (hint_label_ != nullptr) {
-        MoveWindow(hint_label_, form_x, buttons_bottom + scale(8), form_width,
+        MoveWindow(hint_label_, form_x, buttons_bottom + scale(6), form_width,
                    hint_height, TRUE);
     }
 }
@@ -1390,6 +1412,12 @@ void GesturePreferencesInstance::apply_list_theme() {
 
     const bool dark = dark_mode_ ? true : false;
     const COLORREF list_background = dark ? RGB(32, 32, 32) : GetSysColor(COLOR_WINDOW);
+
+    // Полоса прокрутки находится в неклиентской области, поэтому кисти
+    // WM_CTLCOLOR* на неё не действуют. Явно назначаем тёмную Explorer-тему
+    // самому окну, как того требует реализация coreDarkMode для scrollbar.
+    SetWindowTheme(list_, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+    RedrawWindow(list_, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME);
 
     // Таблица - собственный контрол: он сам рисует строки, заголовки групп
     // и выделение, поэтому просто передаём ему палитру текущей темы.
@@ -1472,7 +1500,7 @@ void GesturePreferencesInstance::refresh_list() {
     updating_ = was_updating;
 
     if (count_label_ != nullptr) {
-        const std::wstring text = L"Всего привязок: " + std::to_wstring(settings_.bindings.size());
+        const std::wstring text = L"Bindings: " + std::to_wstring(settings_.bindings.size());
         SetWindowTextW(count_label_, text.c_str());
     }
 
@@ -1508,7 +1536,19 @@ void GesturePreferencesInstance::refresh_command_list() {
                                     "(menu not ready?)";
     }
 
+    // Пакетное обновление: не перерисовываем и не перераспределяем память
+    // после каждой из сотен команд главного меню.
+    SendMessageW(command_combo_, WM_SETREDRAW, FALSE, 0);
     ComboBox_ResetContent(command_combo_);
+    if (!catalog_.empty()) {
+        std::size_t string_bytes = 0;
+        for (const auto& entry : catalog_) {
+            string_bytes += (entry.path.size() + 1) * sizeof(wchar_t);
+        }
+        SendMessageW(command_combo_, CB_INITSTORAGE, static_cast<WPARAM>(catalog_.size()),
+                     static_cast<LPARAM>(string_bytes));
+    }
+
     if (catalog_.empty()) {
         // Пустой список - не повод молча не работать кнопке Add New:
         // показываем причину прямо в выпадающем списке.
@@ -1525,6 +1565,8 @@ void GesturePreferencesInstance::refresh_command_list() {
         ComboBox_SetCurSel(command_combo_, 0);
     }
 
+    SendMessageW(command_combo_, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(command_combo_, nullptr, TRUE);
     update_buttons();
 }
 
@@ -1614,8 +1656,8 @@ void GesturePreferencesInstance::on_add() {
 
     if (gesture.empty()) {
         MessageBoxW(hwnd_,
-                    L"Сначала соберите жест: нажмите кнопки-стрелки, "
-                    L"wheel или rocker в левой части страницы.",
+                    L"Build a gesture first using the direction, wheel, or rocker "
+                    L"buttons on the left side of the page.",
                     L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
         return;
     }
@@ -1629,9 +1671,9 @@ void GesturePreferencesInstance::on_add() {
 
     if (catalog_.empty() || command_index >= static_cast<int>(catalog_.size())) {
         MessageBoxW(hwnd_,
-                    L"Не выбрана команда.\n\n"
-                    L"Для групп context(...) выделите треки в плейлисте (список команд "
-                    L"строится по текущему выделению) либо выберите группу \"main menu\".",
+                    L"No command is selected.\n\n"
+                    L"For context(...) groups, select tracks in the playlist so the command "
+                    L"list can be built, or choose the \"main menu\" group.",
                     L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
         return;
     }
@@ -1662,14 +1704,14 @@ void GesturePreferencesInstance::on_update() {
 
     const std::string gesture = editor_gesture();
     if (gesture.empty()) {
-        MessageBoxW(hwnd_, L"Сначала соберите жест в левой части страницы.",
+        MessageBoxW(hwnd_, L"Build a gesture first using the buttons on the left.",
                     L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
         return;
     }
 
     const int command_index = ComboBox_GetCurSel(command_combo_);
     if (catalog_.empty() || command_index < 0 || command_index >= static_cast<int>(catalog_.size())) {
-        MessageBoxW(hwnd_, L"Не выбрана команда - обновлять нечего.",
+        MessageBoxW(hwnd_, L"Select a command to update the binding.",
                     L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
         return;
     }
