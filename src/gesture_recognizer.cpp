@@ -84,6 +84,9 @@ void GestureRecognizer::begin(long x, long y) {
     accum_x_ = 0.0;
     accum_y_ = 0.0;
     turn_votes_ = 0;
+    cardinal_anchor_x_ = x;
+    cardinal_anchor_y_ = y;
+    cardinal_tokens_.clear();
     tokens_.clear();
 }
 
@@ -92,6 +95,9 @@ void GestureRecognizer::cancel() {
     accum_x_ = 0.0;
     accum_y_ = 0.0;
     turn_votes_ = 0;
+    cardinal_anchor_x_ = 0;
+    cardinal_anchor_y_ = 0;
+    cardinal_tokens_.clear();
     tokens_.clear();
 }
 
@@ -142,12 +148,16 @@ bool GestureRecognizer::move(long x, long y) {
         accum_y_ = 0.0;
         turn_votes_ = 0;
     }
+
+    move_cardinal(x, y, std::max(4, threshold_px() * 3 / 4));
     return added;
 }
 
 bool GestureRecognizer::finish() {
     if (!active_) return false;
     active_ = false;
+
+    move_cardinal(last_x_, last_y_, std::max(4, min_segment_px() * 3 / 4));
 
     const double length = std::sqrt(accum_x_ * accum_x_ + accum_y_ * accum_y_);
     if (length < static_cast<double>(min_segment_px())) {
@@ -162,6 +172,48 @@ bool GestureRecognizer::finish() {
     accum_y_ = 0.0;
     turn_votes_ = 0;
     return added;
+}
+
+void GestureRecognizer::move_cardinal(long x, long y, int distance_px) {
+    const double dx = static_cast<double>(x - cardinal_anchor_x_);
+    const double dy = static_cast<double>(y - cardinal_anchor_y_);
+    if (std::sqrt(dx * dx + dy * dy) < static_cast<double>(distance_px)) return;
+
+    // Проекция на доминирующую ось не создаёт переходных диагоналей и поэтому
+    // особенно хорошо подходит для округлых поворотов между U/D/L/R.
+    const Token direction = std::fabs(dx) > std::fabs(dy)
+        ? (dx > 0.0 ? Token::right : Token::left)
+        : (dy > 0.0 ? Token::down : Token::up);
+
+    if (cardinal_tokens_.empty() || cardinal_tokens_.back() != direction) {
+        if (cardinal_tokens_.size() < kMaxTokens) cardinal_tokens_.push_back(direction);
+    }
+
+    // Даже повтор направления является завершённым отрезком: следующий
+    // поворот должен считаться от новой точки, а не от начала всего жеста.
+    cardinal_anchor_x_ = x;
+    cardinal_anchor_y_ = y;
+}
+
+std::vector<std::string> GestureRecognizer::match_candidates() const {
+    auto candidates = gesture_match_candidates(tokens_);
+
+    // Если детальный 8-направленный разбор не совпал, пробуем независимую
+    // проекцию на U/D/L/R. Для коротких жестов и одиночных диагоналей запасной
+    // вариант не нужен и был бы неоднозначным.
+    if (cardinal_tokens_.size() < 3) return candidates;
+
+    for (const auto& candidate : gesture_match_candidates(cardinal_tokens_)) {
+        bool duplicate = false;
+        for (const auto& existing : candidates) {
+            if (existing == candidate) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate) candidates.push_back(candidate);
+    }
+    return candidates;
 }
 
 bool GestureRecognizer::emit_direction(double accum_x, double accum_y) {

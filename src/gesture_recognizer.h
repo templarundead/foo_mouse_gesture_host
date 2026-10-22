@@ -49,6 +49,11 @@ public:
     bool rocker(bool right_button_first);
 
     const std::vector<Token>& tokens() const { return tokens_; }
+    //! Независимая проекция траектории на 4 основных направления. Используется
+    //! как запасной вариант для округлых составных жестов, после точного разбора.
+    const std::vector<Token>& cardinal_tokens() const { return cardinal_tokens_; }
+    //! Точный и запасные варианты жеста в порядке приоритета сопоставления.
+    std::vector<std::string> match_candidates() const;
     std::string canonical() const { return join_tokens(tokens_); }
     bool empty() const { return tokens_.empty(); }
 
@@ -62,6 +67,8 @@ private:
     bool push(Token token);
     //! Перевести накопленный вектор в звено цепочки.
     bool emit_direction(double accum_x, double accum_y);
+    //! Накопить запасной вариант по доминирующей оси (без диагоналей).
+    void move_cardinal(long x, long y, int distance_px);
 
     bool active_ = false;
     int stroke_length_ = 8;
@@ -78,6 +85,11 @@ private:
 
     // Подтверждения медленного поворота (одиночные выбросы игнорируются).
     int turn_votes_ = 0;
+
+    // Состояние запасного 4-направленного разбора.
+    long cardinal_anchor_x_ = 0;
+    long cardinal_anchor_y_ = 0;
+    std::vector<Token> cardinal_tokens_;
 
     std::vector<Token> tokens_;
 };

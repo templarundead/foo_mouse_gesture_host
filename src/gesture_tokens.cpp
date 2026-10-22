@@ -43,6 +43,27 @@ const TokenInfo* find_info(std::string_view id) {
     return nullptr;
 }
 
+bool token_is_cardinal(Token token) {
+    return token == Token::up || token == Token::down ||
+           token == Token::left || token == Token::right;
+}
+
+//! Две основные составляющие диагонали. Порядок соответствует обходу
+//! D -> R -> U -> L -> D в экранных координатах.
+bool diagonal_components(Token token, Token& first, Token& second) {
+    switch (token) {
+    case Token::down_right: first = Token::down;  second = Token::right; return true;
+    case Token::up_right:   first = Token::right; second = Token::up;    return true;
+    case Token::up_left:    first = Token::up;    second = Token::left;  return true;
+    case Token::down_left:  first = Token::left;  second = Token::down;  return true;
+    default: return false;
+    }
+}
+
+void append_token(std::vector<Token>& tokens, Token token) {
+    if (tokens.empty() || tokens.back() != token) tokens.push_back(token);
+}
+
 } // namespace
 
 std::string token_id(Token token) {
@@ -85,6 +106,65 @@ std::string join_tokens(const std::vector<Token>& tokens) {
         out += token_id(tokens[i]);
     }
     return out;
+}
+
+std::vector<std::string> gesture_match_candidates(const std::vector<Token>& tokens) {
+    std::vector<std::string> candidates;
+
+    const auto add_candidate = [&candidates](const std::vector<Token>& value) {
+        const std::string gesture = join_tokens(value);
+        for (const auto& existing : candidates) {
+            if (existing == gesture) return;
+        }
+        candidates.push_back(gesture);
+    };
+
+    // Точное совпадение всегда имеет наивысший приоритет.
+    add_candidate(tokens);
+    if (tokens.empty()) return candidates;
+
+    std::size_t cardinal_count = 0;
+    std::size_t diagonal_count = 0;
+    for (const Token token : tokens) {
+        if (!token_is_directional(token)) return candidates;
+        if (token_is_cardinal(token)) ++cardinal_count;
+        else ++diagonal_count;
+    }
+
+    const auto add_relaxed = [&add_candidate](std::vector<Token> relaxed) {
+        add_candidate(relaxed);
+        if (relaxed.size() >= 4 && relaxed.front() == relaxed.back()) {
+            relaxed.pop_back();
+            add_candidate(relaxed);
+        }
+    };
+
+    // Раскрываем каждую переходную диагональ в две составляющие в порядке
+    // обхода. Например, полностью округлый квадрат "DR UR UL DL" превращается
+    // в "D R U L D", после чего отбрасывается замыкающий поворот. Одиночную
+    // диагональ не раскрываем: это было бы слишком неоднозначно. Точные
+    // диагональные привязки всё равно проверяются первыми.
+    if (diagonal_count != 0 && tokens.size() >= 3 &&
+        (cardinal_count != 0 || tokens.size() >= 4)) {
+        std::vector<Token> expanded;
+        for (const Token token : tokens) {
+            Token first = Token::up;
+            Token second = Token::up;
+            if (diagonal_components(token, first, second)) {
+                append_token(expanded, first);
+                append_token(expanded, second);
+            } else {
+                append_token(expanded, token);
+            }
+        }
+        add_relaxed(std::move(expanded));
+    } else if (cardinal_count >= 4) {
+        // В цепочке без диагоналей нужен только вариант без замыкающего
+        // поворота к начальной точке.
+        add_relaxed(tokens);
+    }
+
+    return candidates;
 }
 
 bool parse_gesture(std::string_view gesture, std::vector<Token>& out) {
