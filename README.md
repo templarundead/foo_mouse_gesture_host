@@ -205,9 +205,15 @@ msbuild foo_mouse_gesture_host.sln /m /p:Configuration=Release /p:Platform=x64
 
 Результат: `build\x64\Release\foo_mouse_gesture_host.dll`.
 
-Можно открыть `foo_mouse_gesture_host.sln` и в Visual Studio — конфигурации
-`Debug|x64`, `Release|x64`, `Debug|Win32`, `Release|Win32` уже настроены
-(целевая платформа — x64).
+Можно открыть `foo_mouse_gesture_host.sln` и в Visual Studio — в решении
+настроены конфигурации `Debug|x64` и `Release|x64` (целевая платформа — x64).
+
+Решение включает в себя проекты SDK (`pfc`, `foobar2000_SDK`,
+`foobar2000_component_client`), поэтому **перед первым открытием .sln**
+обязательно выполните `tools\fetch-sdk.ps1` — иначе Visual Studio не найдёт
+эти проекты. PFC автоматически собирается в конфигурации `Debug FB2K` /
+`Release FB2K` (в остальных конфигурациях его `fb2k-hooks` конфликтуют
+с `foobar2000_SDK.lib`).
 
 ### Параметры проекта
 
@@ -215,7 +221,8 @@ msbuild foo_mouse_gesture_host.sln /m /p:Configuration=Release /p:Platform=x64
 - Include-пути: `sdk`, `sdk\foobar2000`, `src`
 - Линкуются `pfc`, `foobar2000_SDK`, `foobar2000_component_client`
   и предсобранный `sdk\foobar2000\shared\shared-x64.lib`
-- `comctl32.lib`, `uxtheme.lib` — для ListView/UpDown и тёмной темы
+- `comctl32.lib`, `uxtheme.lib`, `shlwapi.lib` — ListView/UpDown, тёмная тема,
+  `StrCmpLogicalW` из состава SDK
 
 ---
 
@@ -227,7 +234,7 @@ msbuild foo_mouse_gesture_host.sln /m /p:Configuration=Release /p:Platform=x64
    запуске и при push тега `v*`;
 2. скачивает **официальный** SDK (`https://www.foobar2000.org/downloads/SDK-2023-09-23.7z`),
    распаковывает его в `sdk/`;
-3. собирает `Release | x64` через MSBuild;
+3. собирает `Release | x64` через MSBuild (`foo_mouse_gesture_host.sln`);
 4. упаковывает DLL в `foo_mouse_gesture_host-<версия>.fb2k-component`
    (это ZIP-архив) и загружает как artifact;
 5. при push тега вида `v1.0.0` создаёт GitHub Release и прикрепляет к нему

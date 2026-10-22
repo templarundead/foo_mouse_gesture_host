@@ -137,9 +137,15 @@ jobs:
             'dev'
           }
 
+          $dll = Get-Item 'build\x64\Release\foo_mouse_gesture_host.dll' -ErrorAction Stop
+          if ($dll.Length -lt 20000) {
+            throw "Built DLL looks wrong: $($dll.Length) bytes"
+          }
+          Write-Host "DLL: $($dll.FullName) ($($dll.Length) bytes)"
+
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           $package = "dist\foo_mouse_gesture_host-$version.fb2k-component"
-          Compress-Archive -Path 'build\x64\Release\foo_mouse_gesture_host.dll' -DestinationPath $package -Force
+          Compress-Archive -Path $dll.FullName -DestinationPath $package -Force
 
           Get-Item $package | Select-Object FullName, Length
           "MGH_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
