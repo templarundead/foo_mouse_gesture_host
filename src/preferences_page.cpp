@@ -1172,6 +1172,8 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
         if (wparam != 0) {
             fit_to_parent();
             layout();
+            // Меню могло быть недоступно в момент создания страницы.
+            if (catalog_.empty()) refresh_command_list();
         }
         break;
 
