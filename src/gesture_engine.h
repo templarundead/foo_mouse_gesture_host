@@ -47,6 +47,12 @@ private:
     //! Отправить обычный правый клик (после подавленного правого нажатия).
     void replay_right_click();
 
+    //! Поставить отложенный реплей клика в очередь главного потока.
+    //! SendInput нельзя вызывать изнутри WH_MOUSE_LL: система ждёт возврата
+    //! из колбэка (LowLevelHooksTimeout), и контекстное меню открывается
+    //! с заметной задержкой.
+    void request_right_click_replay();
+
     bool has_binding(const std::string& gesture) const;
     bool has_binding_prefix(const std::string& gesture) const;
     void reset_session();
@@ -68,6 +74,9 @@ private:
     //! только в этом окне: часть драйверов (тачпады, мыши) тоже помечает
     //! свой ввод как LLMHF_INJECTED, и глобальный фильтр ломал бы жесты.
     ULONGLONG replay_guard_ = 0;
+
+    //! Правый клик нужно переиграть, как только колбэк хука вернёт управление.
+    bool replay_pending_ = false;
 
     bool right_down_ = false;
     bool left_down_ = false;

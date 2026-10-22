@@ -88,6 +88,7 @@ void GestureEngine::uninstall() {
         sink_ = nullptr;
     }
     pending_.clear();
+    replay_pending_ = false;
     reset_session();
 }
 
@@ -128,7 +129,24 @@ void GestureEngine::queue_gesture(const std::string& gesture) {
     PostMessageW(sink_, kMsgExecuteGesture, 0, 0);
 }
 
+void GestureEngine::request_right_click_replay() {
+    replay_pending_ = true;
+    if (sink_ != nullptr) {
+        PostMessageW(sink_, kMsgExecuteGesture, 0, 0);
+    } else {
+        // Окно-приёмник ещё не создано - отправляем напрямую: лучше так,
+        // чем потерять клик совсем.
+        replay_pending_ = false;
+        replay_right_click();
+    }
+}
+
 void GestureEngine::drain_queue() {
+    if (replay_pending_) {
+        replay_pending_ = false;
+        replay_right_click();
+    }
+
     while (!pending_.empty()) {
         const std::string gesture = pending_.front();
         pending_.pop_front();
@@ -268,7 +286,9 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
 
         if (was_suppressed) {
             swallow = true;
-            if (!executed && !wheel_in_use && was_tap) replay_right_click();
+            // Сам SendInput - только из цикла сообщений: изнутри хука он
+            // ждёт LowLevelHooksTimeout и меню открывается с задержкой.
+            if (!executed && !wheel_in_use && was_tap) request_right_click_replay();
         }
 
         wheel_used_ = false;
