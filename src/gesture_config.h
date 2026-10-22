@@ -18,7 +18,7 @@ struct GestureBinding {
 
 //! Полный набор настроек компонента.
 struct GestureSettings {
-    int stroke_length = 10;      //!< "Stroke Length" (1..100).
+    int stroke_length = 8;       //!< "Stroke Length" (1..100).
     bool disabled = false;       //!< "Disable mouse gesture".
     bool alphabet = false;       //!< "Represent direction by the alphabet".
     bool first_only = false;     //!< "Execute only the first command".

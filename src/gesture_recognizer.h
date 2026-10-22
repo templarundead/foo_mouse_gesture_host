@@ -23,6 +23,9 @@ public:
     //! Порог срабатывания в пикселях.
     int threshold_px() const;
 
+    //! Минимальная длина штриха, закрытого по резкому повороту.
+    int min_segment_px() const;
+
     //! Начать жест в экранной точке (x, y).
     void begin(long x, long y);
 
@@ -53,8 +56,11 @@ public:
 private:
     bool push(Token token);
 
+    //! Перевести накопленный вектор в звено цепочки.
+    bool emit_direction(double accum_x, double accum_y);
+
     bool active_ = false;
-    int stroke_length_ = 10;
+    int stroke_length_ = 8;
 
     long start_x_ = 0;
     long start_y_ = 0;
@@ -65,6 +71,7 @@ private:
     // в экранных координатах (ось Y направлена вниз).
     double accum_x_ = 0.0;
     double accum_y_ = 0.0;
+
 
     std::vector<Token> tokens_;
 };

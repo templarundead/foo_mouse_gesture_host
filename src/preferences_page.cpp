@@ -963,7 +963,8 @@ void GesturePreferencesInstance::create_children() {
     count_label_ = make_static(L"", SS_LEFT | SS_CENTERIMAGE);
     hint_label_ = make_static(
         L"1. Соберите жест стрелками / wheel / rocker.\r\n"
-        L"2. Выберите команду и нажмите Add New.",
+        L"2. Выберите команду и нажмите Add New.\r\n"
+        L"3. Rocker: зажмите одну кнопку мыши и щёлкните другой (R+L / L+R).",
         SS_LEFT);
 
     up_label_ = make_static(L"up", SS_CENTER);
@@ -1184,7 +1185,7 @@ void GesturePreferencesInstance::layout() {
 
     // --- правая колонка: 4 строки формы + кнопки + подсказка ----------------
     const int row_step = control_height + scale(8);
-    const int hint_height = label_height * 2 + scale(4);
+    const int hint_height = label_height * 3 + scale(6);
     const int right_content_height = 4 * row_step + scale(10) +
                                      button_rows * control_height + (button_rows - 1) * gap +
                                      scale(8) + hint_height;
@@ -1356,7 +1357,7 @@ void GesturePreferencesInstance::layout() {
 
     if (hint_label_ != nullptr) {
         MoveWindow(hint_label_, form_x, buttons_bottom + scale(8), form_width,
-                   label_height * 2 + scale(4), TRUE);
+                   hint_height, TRUE);
     }
 }
 
