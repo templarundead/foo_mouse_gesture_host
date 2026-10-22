@@ -64,6 +64,11 @@ private:
     POINT right_down_point_ = {};
     bool right_moved_ = false;
 
+    //! Момент последнего SendInput-клика. Инжектированные события игнорируем
+    //! только в этом окне: часть драйверов (тачпады, мыши) тоже помечает
+    //! свой ввод как LLMHF_INJECTED, и глобальный фильтр ломал бы жесты.
+    ULONGLONG replay_guard_ = 0;
+
     bool right_down_ = false;
     bool left_down_ = false;
     bool session_from_right_ = true;
