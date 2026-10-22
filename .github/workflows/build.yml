@@ -84,6 +84,9 @@ jobs:
           if (-not (Test-Path 'sdk\foobar2000\SDK\foobar2000.h')) { throw 'SDK was not copied correctly.' }
           Get-ChildItem sdk | Select-Object -ExpandProperty Name
 
+          $source = if ($usedMirror) { 'GitHub mirror (official download failed)' } else { 'foobar2000.org (official)' }
+          Write-Host "::notice title=SDKSource::$env:SDK_VERSION from $source"
+
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@v2
 
