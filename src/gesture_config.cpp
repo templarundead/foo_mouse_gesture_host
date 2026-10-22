@@ -65,6 +65,15 @@ void split_fields(std::string_view line, std::vector<std::string>& fields) {
     }
 }
 
+bool g_cfg_bindings_is_empty() {
+#if FOOBAR2000_TARGET_VERSION < 81
+    const char* stored = g_cfg_bindings.get_ptr();
+    return stored == nullptr || stored[0] == '\0';
+#else
+    return g_cfg_bindings.get().is_empty();
+#endif
+}
+
 } // namespace
 
 GestureConfig& GestureConfig::instance() {
@@ -96,9 +105,12 @@ GestureSettings GestureConfig::load_from_storage() const {
     settings.bindings = deserialize(std::string_view(stored.c_str(), stored.length()));
 #endif
 
-    // Первый запуск: конфигурация ещё ни разу не сохранялась - показываем
-    // стандартные привязки, чтобы таблица не была пустой.
-    if ((flags & flag_initialized) == 0) {
+    // Первый запуск (или пустое хранилище, оставшееся от прежних версий,
+    // где таблица могла сохраниться пустой) - показываем стандартные привязки,
+    // чтобы страница настроек не выглядела сломанной.
+    const bool never_saved = (flags & flag_initialized) == 0;
+    const bool stored_empty = g_cfg_bindings_is_empty();
+    if (never_saved || stored_empty) {
         settings.bindings = defaults().bindings;
     }
 

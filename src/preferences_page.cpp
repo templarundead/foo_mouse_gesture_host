@@ -1132,8 +1132,14 @@ void GesturePreferencesInstance::on_add() {
         return;
     }
 
-    const int command_index = ComboBox_GetCurSel(command_combo_);
-    if (catalog_.empty() || command_index < 0 || command_index >= static_cast<int>(catalog_.size())) {
+    // Список команд мог не построиться при открытии страницы (меню ещё не готово) -
+    // пробуем ещё раз, прежде чем отказывать пользователю.
+    if (catalog_.empty()) refresh_command_list();
+
+    int command_index = ComboBox_GetCurSel(command_combo_);
+    if (command_index < 0 && !catalog_.empty()) command_index = 0;
+
+    if (catalog_.empty() || command_index >= static_cast<int>(catalog_.size())) {
         MessageBoxW(hwnd_,
                     L"Не выбрана команда.\n\n"
                     L"Для групп context(...) выделите треки в плейлисте (список команд "
