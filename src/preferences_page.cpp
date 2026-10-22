@@ -1064,11 +1064,14 @@ void GesturePreferencesInstance::refresh_command_list() {
 }
 
 void GesturePreferencesInstance::update_buttons() {
+    if (list_ == nullptr || add_button_ == nullptr) return;
+
     const int selected = selected_row();
     const int count = static_cast<int>(settings_.bindings.size());
     const bool has_selection = selected >= 0 && selected < count;
 
-    const bool has_command = !catalog_.empty() && ComboBox_GetCurSel(command_combo_) >= 0;
+    const bool has_command = command_combo_ != nullptr && !catalog_.empty() &&
+                             ComboBox_GetCurSel(command_combo_) >= 0;
 
     EnableWindow(add_button_, has_command);
     EnableWindow(update_button_, has_selection && has_command);
