@@ -120,6 +120,9 @@ private:
 
     void create_children();
     void add_list_column(int index, const wchar_t* title, int width);
+    //! Подогнать страницу под клиентскую область родителя (хост не всегда
+    //! присылает WM_SIZE, из-за чего низ страницы обрезался).
+    void fit_to_parent();
     void layout();
     void apply_theme();
     void apply_list_theme();
@@ -150,6 +153,13 @@ private:
     int current_place_index() const;
     std::string current_group_id() const;
     std::string current_place_id() const;
+    //! Индекс привязки в settings_.bindings по отображаемой строке ListView
+    //! (при включённом group view порядок строк не совпадает с порядком привязок).
+    int binding_index_from_display(int display_row) const;
+    int display_row_from_binding_index(int binding_index) const;
+    //! Выделить строку, соответствующую привязке.
+    void select_binding(int binding_index);
+    //! Индекс выбранной привязки (не строки таблицы!).
     int selected_row() const;
     int read_stroke_length() const;
 
@@ -169,6 +179,15 @@ private:
     // --- Win32 ---
     HWND hwnd_ = nullptr;
     HWND list_ = nullptr;
+
+    //! Шапка таблицы рисуется отдельными Static-контролами: заголовок
+    //! ListView в тёмной теме foobar2000 остаётся белым на белом.
+    HWND header_gesture_ = nullptr;
+    HWND header_command_ = nullptr;
+    HWND header_place_ = nullptr;
+
+    //! Удалось ли включить group view (иначе тип жеста пишется в первую колонку).
+    bool groups_enabled_ = false;
 
     HWND up_label_ = nullptr;
     HWND down_label_ = nullptr;
@@ -222,6 +241,7 @@ private:
     int dpi_ = 96;
     bool dirty_ = false;
     bool updating_ = false;
+    bool diagnostics_logged_ = false;
 
     preferences_page_callback::ptr callback_;
     fb2k::CCoreDarkModeHooks dark_mode_;
@@ -391,17 +411,37 @@ void GesturePreferencesInstance::create_children() {
 
     const HINSTANCE instance = core_api::get_my_instance();
 
+    INITCOMMONCONTROLSEX common_controls = {};
+    common_controls.dwSize = sizeof(common_controls);
+    common_controls.dwICC = ICC_LISTVIEW_CLASSES | ICC_UPDOWN_CLASS | ICC_STANDARD_CLASSES;
+    InitCommonControlsEx(&common_controls);
+
+    // Заголовок ListView не используем (LVS_NOCOLUMNHEADER): в тёмной теме
+    // foobar2000 он остаётся белым, а текст на нём не читается. Вместо него
+    // над таблицей стоят обычные Static-контролы.
     list_ = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL |
-                                LVS_SHOWSELALWAYS | LVS_NOSORTHEADER,
-                            0, 0, 200, 200, hwnd_,
+                                LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | LVS_NOCOLUMNHEADER,
+                            0, 0, 200, 120, hwnd_,
                             reinterpret_cast<HMENU>(static_cast<INT_PTR>(kIdList)), instance, nullptr);
-    if (font_ != nullptr) SendMessageW(list_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-    ListView_SetExtendedListViewStyle(list_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
-    ListView_EnableGroupView(list_, TRUE);
-    add_list_column(0, L"Gesture", scale(160));
-    add_list_column(1, L"Command", scale(320));
-    add_list_column(2, L"Place", scale(120));
+    if (list_ == nullptr) {
+        FB2K_console_formatter() << "Mouse Gesture Host: failed to create the gesture list ("
+                                 << static_cast<unsigned long>(GetLastError()) << ")";
+    } else {
+        if (font_ != nullptr) SendMessageW(list_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+        ListView_SetExtendedListViewStyle(list_, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP);
+        add_list_column(0, L"Gesture", scale(160));
+        add_list_column(1, L"Command", scale(320));
+        add_list_column(2, L"Place", scale(120));
+
+        // group view поддерживается не всеми версиями comctl32; если не вышло -
+        // тип жеста будет дописан в первую колонку, но строки всё равно видны.
+        groups_enabled_ = ListView_EnableGroupView(list_, TRUE) != 0;
+    }
+
+    header_gesture_ = make_static(L"Gesture", SS_LEFT | SS_CENTERIMAGE);
+    header_command_ = make_static(L"Command", SS_LEFT | SS_CENTERIMAGE);
+    header_place_ = make_static(L"Place", SS_LEFT | SS_CENTERIMAGE);
 
     up_label_ = make_static(L"up", SS_CENTER);
     down_label_ = make_static(L"down", SS_CENTER);
@@ -470,6 +510,29 @@ void GesturePreferencesInstance::create_children() {
 //  Разметка
 // ---------------------------------------------------------------------------
 
+void GesturePreferencesInstance::fit_to_parent() {
+    if (hwnd_ == nullptr) return;
+
+    HWND parent = GetParent(hwnd_);
+    if (parent == nullptr) return;
+
+    RECT parent_client = {};
+    GetClientRect(parent, &parent_client);
+    const int available_width = parent_client.right - parent_client.left;
+    const int available_height = parent_client.bottom - parent_client.top;
+    if (available_width <= 0 || available_height <= 0) return;
+
+    RECT current = {};
+    GetClientRect(hwnd_, &current);
+    const int current_width = current.right - current.left;
+    const int current_height = current.bottom - current.top;
+
+    if (current_width == available_width && current_height == available_height) return;
+
+    SetWindowPos(hwnd_, nullptr, 0, 0, available_width, available_height,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 void GesturePreferencesInstance::layout() {
     if (hwnd_ == nullptr || list_ == nullptr) return;
 
@@ -479,122 +542,191 @@ void GesturePreferencesInstance::layout() {
     const int height = client.bottom - client.top;
     if (width <= 0 || height <= 0) return;
 
-    const int margin = scale(8);
+    const int margin = scale(10);
     const int gap = scale(6);
     const int label_height = scale(14);
     const int control_height = scale(24);
+    const int pad_cell = scale(38);
+    const int pad_gap = scale(4);
+    const int header_height = scale(18);
+    const int list_top = margin + header_height + scale(2);
 
-    int list_height = height - scale(300);
-    if (list_height < scale(120)) list_height = scale(120);
-    if (list_height > height - scale(140)) list_height = height - scale(140);
-    if (list_height < scale(80)) list_height = scale(80);
+    // Вертикальные отступы блока настроек. В "tight" варианте они уменьшены,
+    // чтобы содержимое помещалось на невысоких страницах (маленький экран,
+    // крупный системный шрифт).
+    struct Metrics {
+        int gap_wheel;
+        int gap_after_wheel;
+        int gap_rocker;
+        int gap_stroke;
+        int check_step;
+    };
 
-    MoveWindow(list_, margin, margin, width - 2 * margin, list_height, TRUE);
+    const Metrics spacious = { scale(16), scale(8), scale(14), scale(12), scale(24) };
+    const Metrics compact  = { scale(10), scale(4), scale(8),  scale(6),  scale(20) };
 
+    const int row_step = control_height + scale(8);
+
+    // Один и тот же код и измеряет блок, и расставляет контролы - так разметка
+    // не может "разъехаться" с расчётом высоты.
+    auto place_lower = [&](int top, const Metrics& metrics, bool repaint) -> int {
+        const BOOL paint = repaint ? TRUE : FALSE;
+        int y = top;
+
+        // --- крестовина направлений ---
+        const int pad_x = margin;
+        const int bs_x = pad_x + 2 * (pad_cell + pad_gap);
+        const int pad_center = bs_x + pad_cell / 2;
+
+        MoveWindow(up_label_, pad_center - scale(30), y, scale(60), label_height, paint);
+        y += label_height;
+        MoveWindow(dir_up_, bs_x, y, pad_cell, control_height, paint);
+        y += control_height + pad_gap;
+
+        MoveWindow(left_label_, pad_x, y + scale(4), pad_cell, label_height, paint);
+        MoveWindow(dir_left_, pad_x + pad_cell + pad_gap, y, pad_cell, control_height, paint);
+        MoveWindow(dir_backspace_, bs_x, y, pad_cell, control_height, paint);
+        MoveWindow(dir_right_, bs_x + pad_cell + pad_gap, y, pad_cell, control_height, paint);
+        MoveWindow(right_label_, bs_x + 2 * (pad_cell + pad_gap), y + scale(4), pad_cell, label_height, paint);
+        y += control_height + pad_gap;
+
+        MoveWindow(dir_down_, bs_x, y, pad_cell, control_height, paint);
+        MoveWindow(down_label_, pad_center - scale(30), y + control_height + 1, scale(60), label_height, paint);
+        y += control_height + label_height + 1 + metrics.gap_wheel;
+
+        // --- колесо ---
+        MoveWindow(wheel_label_, margin, y + scale(3), scale(44), label_height, paint);
+        MoveWindow(wheel_up_, margin + scale(48), y, scale(28), control_height, paint);
+        MoveWindow(wheel_down_, margin + scale(80), y, scale(28), control_height, paint);
+        MoveWindow(wheel_up_label_, margin + scale(48), y + control_height + 1, scale(28), label_height, paint);
+        MoveWindow(wheel_down_label_, margin + scale(80), y + control_height + 1, scale(28), label_height, paint);
+        y += control_height + label_height + 1 + metrics.gap_after_wheel;
+
+        // --- рокер ---
+        MoveWindow(rocker_label_, margin, y + scale(3), scale(44), label_height, paint);
+        MoveWindow(rocker_rl_, margin + scale(48), y, scale(48), control_height, paint);
+        MoveWindow(rocker_lr_, margin + scale(100), y, scale(48), control_height, paint);
+        y += control_height + metrics.gap_rocker;
+
+        // --- длина штриха ---
+        MoveWindow(stroke_label_, margin, y + scale(3), scale(96), label_height, paint);
+        MoveWindow(stroke_edit_, margin + scale(98), y, scale(56), control_height - scale(2), paint);
+        MoveWindow(stroke_spin_, margin + scale(155), y, scale(16), control_height - scale(2), paint);
+        y += control_height + metrics.gap_stroke;
+
+        // --- галочки (в столбик: на узкой странице они больше не наезжают друг на друга) ---
+        MoveWindow(disable_check_, margin, y, scale(260), scale(18), paint);
+        MoveWindow(alphabet_check_, margin, y + metrics.check_step, scale(300), scale(18), paint);
+        MoveWindow(first_only_check_, margin, y + 2 * metrics.check_step, scale(300), scale(18), paint);
+        y += scale(18) + 2 * metrics.check_step;
+
+        // --- правая колонка: редактор привязки ---
+        int left_width = width * 38 / 100;
+        left_width = clamp_int(left_width, scale(210), scale(380));
+
+        const int form_x = margin + left_width + scale(16);
+        const int form_width = width - margin - form_x;
+
+        int label_width = scale(84);
+        int editor_width = form_width - label_width;
+        if (editor_width < scale(140)) {
+            label_width = scale(60);
+            editor_width = form_width - label_width;
+        }
+        if (editor_width < scale(80)) editor_width = scale(80);
+        const int editor_x = form_x + label_width;
+
+        MoveWindow(gesture_label_, form_x, top + scale(4), label_width, label_height, paint);
+        MoveWindow(gesture_edit_, editor_x, top, editor_width, control_height, paint);
+
+        MoveWindow(group_label_, form_x, top + row_step + scale(4), label_width, label_height, paint);
+        SetWindowPos(group_combo_, nullptr, editor_x, top + row_step, editor_width, scale(240),
+                     SWP_NOZORDER | SWP_NOACTIVATE | (repaint ? 0 : SWP_NOREDRAW));
+
+        MoveWindow(command_label_, form_x, top + 2 * row_step + scale(4), label_width, label_height, paint);
+        SetWindowPos(command_combo_, nullptr, editor_x, top + 2 * row_step, editor_width, scale(240),
+                     SWP_NOZORDER | SWP_NOACTIVATE | (repaint ? 0 : SWP_NOREDRAW));
+
+        MoveWindow(place_label_, form_x, top + 3 * row_step + scale(4), label_width, label_height, paint);
+        SetWindowPos(place_combo_, nullptr, editor_x, top + 3 * row_step,
+                     editor_width < scale(190) ? editor_width : scale(190), scale(160),
+                     SWP_NOZORDER | SWP_NOACTIVATE | (repaint ? 0 : SWP_NOREDRAW));
+
+        // --- кнопки управления таблицей ---
+        const int buttons_y = top + 4 * row_step + scale(10);
+        const int base_widths[5] = { 90, 66, 66, 54, 54 };
+        HWND buttons[5] = { add_button_, update_button_, delete_button_, move_up_button_, move_down_button_ };
+
+        int total_width = 4 * gap;
+        for (const int base : base_widths) total_width += scale(base);
+
+        const double factor = form_width < total_width
+            ? static_cast<double>(form_width) / static_cast<double>(total_width)
+            : 1.0;
+
+        int x = form_x;
+        for (int i = 0; i < 5; ++i) {
+            const int button_width = static_cast<int>(scale(base_widths[i]) * factor);
+            MoveWindow(buttons[i], x, buttons_y, button_width, control_height, paint);
+            x += button_width + gap;
+        }
+
+        const int right_bottom = buttons_y + control_height;
+        return y > right_bottom ? y : right_bottom;
+    };
+
+    // Измеряем блок сначала с обычными отступами; если не помещается - сжимаем.
+    const int min_list_height = scale(90);
+
+    const Metrics* metrics = &spacious;
+    int lower_bottom = place_lower(0, *metrics, false);
+    int top = height - margin - lower_bottom;
+
+    if (top - scale(12) - list_top < min_list_height) {
+        metrics = &compact;
+        lower_bottom = place_lower(0, *metrics, false);
+        top = height - margin - lower_bottom;
+        if (top - scale(12) - list_top < min_list_height) {
+            // Совсем мало места: список ужимается до минимума.
+            top = list_top + scale(12) + min_list_height;
+        }
+    }
+
+    const int list_height = top - scale(12) - list_top;
+
+    // --- таблица привязок ---
     const int list_width = width - 2 * margin;
-    ListView_SetColumnWidth(list_, 0, list_width * 26 / 100);
-    ListView_SetColumnWidth(list_, 1, list_width * 54 / 100);
-    ListView_SetColumnWidth(list_, 2, list_width * 20 / 100);
+    MoveWindow(list_, margin, list_top, list_width, list_height, TRUE);
 
-    const int top = margin + list_height + scale(12);
+    int column_gesture = list_width * 26 / 100;
+    int column_command = list_width * 54 / 100;
+    int column_place = list_width - column_gesture - column_command;
 
-    int left_width = width * 45 / 100;
-    left_width = clamp_int(left_width, scale(240), scale(360));
-
-    // --- крестовина направлений ---
-    const int cell_width = scale(38);
-    const int cell_height = control_height;
-    const int cell_gap = scale(4);
-    const int pad_center = margin + scale(78);
-
-    const int up_y = top + label_height + 1;
-    const int mid_y = up_y + cell_height + cell_gap;
-    const int down_y = mid_y + cell_height + cell_gap;
-    const int down_label_y = down_y + cell_height + 1;
-
-    MoveWindow(up_label_, pad_center - scale(30), top, scale(60), label_height, TRUE);
-    MoveWindow(dir_up_, pad_center - cell_width / 2, up_y, cell_width, cell_height, TRUE);
-
-    MoveWindow(dir_left_, pad_center - cell_width / 2 - cell_gap - cell_width, mid_y, cell_width, cell_height, TRUE);
-    MoveWindow(dir_backspace_, pad_center - cell_width / 2, mid_y, cell_width, cell_height, TRUE);
-    MoveWindow(dir_right_, pad_center - cell_width / 2 + cell_gap + cell_width, mid_y, cell_width, cell_height, TRUE);
-
-    MoveWindow(left_label_, pad_center - cell_width / 2 - cell_gap - cell_width - scale(46),
-               mid_y + scale(4), scale(42), label_height, TRUE);
-    MoveWindow(right_label_, pad_center + cell_width / 2 + cell_gap + scale(6),
-               mid_y + scale(4), scale(42), label_height, TRUE);
-
-    MoveWindow(dir_down_, pad_center - cell_width / 2, down_y, cell_width, cell_height, TRUE);
-    MoveWindow(down_label_, pad_center - scale(30), down_label_y, scale(60), label_height, TRUE);
-
-    // --- колесо и рокер ---
-    const int wheel_y = down_label_y + label_height + scale(16);
-
-    MoveWindow(wheel_label_, margin, wheel_y + scale(3), scale(44), label_height, TRUE);
-    MoveWindow(wheel_up_, margin + scale(48), wheel_y, scale(28), control_height, TRUE);
-    MoveWindow(wheel_down_, margin + scale(80), wheel_y, scale(28), control_height, TRUE);
-    MoveWindow(wheel_up_label_, margin + scale(48), wheel_y + control_height + 1, scale(28), label_height, TRUE);
-    MoveWindow(wheel_down_label_, margin + scale(80), wheel_y + control_height + 1, scale(28), label_height, TRUE);
-
-    const int rocker_y = wheel_y + control_height + label_height + scale(6);
-    MoveWindow(rocker_label_, margin, rocker_y + scale(3), scale(44), label_height, TRUE);
-    MoveWindow(rocker_rl_, margin + scale(48), rocker_y, scale(48), control_height, TRUE);
-    MoveWindow(rocker_lr_, margin + scale(100), rocker_y, scale(48), control_height, TRUE);
-
-    // --- длина штриха ---
-    const int stroke_y = rocker_y + control_height + scale(14);
-    MoveWindow(stroke_label_, margin, stroke_y + scale(4), scale(92), label_height, TRUE);
-    MoveWindow(stroke_edit_, margin + scale(94), stroke_y, scale(56), control_height - scale(2), TRUE);
-    MoveWindow(stroke_spin_, margin + scale(151), stroke_y, scale(16), control_height - scale(2), TRUE);
-
-    // --- галочки ---
-    const int check_y = stroke_y + control_height + scale(12);
-    const int check_width = left_width - margin;
-    MoveWindow(disable_check_, margin, check_y, check_width, scale(18), TRUE);
-    MoveWindow(alphabet_check_, margin, check_y + scale(24), check_width, scale(18), TRUE);
-    if (left_width >= scale(360)) {
-        MoveWindow(first_only_check_, margin + scale(210), check_y + scale(24), check_width - scale(200), scale(18), TRUE);
-    } else {
-        MoveWindow(first_only_check_, margin, check_y + scale(48), check_width, scale(18), TRUE);
+    const int min_place = scale(70);
+    if (column_place < min_place) {
+        column_place = min_place;
+        column_command = list_width - column_gesture - column_place;
+        if (column_command < scale(120)) {
+            column_command = scale(120);
+            column_gesture = list_width - column_command - column_place;
+            if (column_gesture < scale(70)) column_gesture = scale(70);
+        }
     }
 
-    // --- правая колонка с редактором привязки ---
-    const int form_x = margin + left_width + scale(16);
-    const int form_width = width - margin - form_x;
-    const int label_width = scale(80);
-    const int editor_x = form_x + label_width;
-    const int editor_width = form_width - label_width;
-    const int row = control_height + scale(8);
+    ListView_SetColumnWidth(list_, 0, column_gesture);
+    ListView_SetColumnWidth(list_, 1, column_command);
+    ListView_SetColumnWidth(list_, 2, column_place);
 
-    MoveWindow(gesture_label_, form_x, top + scale(4), label_width, label_height, TRUE);
-    MoveWindow(gesture_edit_, editor_x, top, editor_width, control_height, TRUE);
+    // Заголовки таблицы - обычные Static-контролы (заголовок ListView
+    // в тёмной теме остаётся белым на белом).
+    const int header_x = margin + scale(2);
+    MoveWindow(header_gesture_, header_x, margin, column_gesture, header_height, TRUE);
+    MoveWindow(header_command_, header_x + column_gesture, margin, column_command, header_height, TRUE);
+    MoveWindow(header_place_, header_x + column_gesture + column_command, margin,
+               width - margin - (header_x + column_gesture + column_command), header_height, TRUE);
 
-    MoveWindow(group_label_, form_x, top + row + scale(4), label_width, label_height, TRUE);
-    SetWindowPos(group_combo_, nullptr, editor_x, top + row, editor_width, scale(200), SWP_NOZORDER | SWP_NOACTIVATE);
-
-    MoveWindow(command_label_, form_x, top + 2 * row + scale(4), label_width, label_height, TRUE);
-    SetWindowPos(command_combo_, nullptr, editor_x, top + 2 * row, editor_width, scale(240), SWP_NOZORDER | SWP_NOACTIVATE);
-
-    MoveWindow(place_label_, form_x, top + 3 * row + scale(4), label_width, label_height, TRUE);
-    SetWindowPos(place_combo_, nullptr, editor_x, top + 3 * row, editor_width < scale(190) ? editor_width : scale(190),
-                 scale(160), SWP_NOZORDER | SWP_NOACTIVATE);
-
-    // --- кнопки управления таблицей ---
-    const int buttons_y = top + 4 * row + scale(8);
-    const int base_widths[5] = { 90, 66, 66, 54, 54 };
-    HWND buttons[5] = { add_button_, update_button_, delete_button_, move_up_button_, move_down_button_ };
-
-    int total_width = 4 * gap;
-    for (const int base : base_widths) total_width += scale(base);
-
-    const double factor = form_width < total_width ? static_cast<double>(form_width) / static_cast<double>(total_width) : 1.0;
-
-    int x = form_x;
-    for (int i = 0; i < 5; ++i) {
-        const int button_width = static_cast<int>(scale(base_widths[i]) * factor);
-        MoveWindow(buttons[i], x, buttons_y, button_width, control_height, TRUE);
-        x += button_width + gap;
-    }
+    // Финальная расстановка нижнего блока на вычисленном месте.
+    place_lower(top, *metrics, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -677,35 +809,48 @@ void GesturePreferencesInstance::refresh_list() {
         default: group = kGroupGesture; break;
         }
 
-        if (group != last_group) {
-            const wchar_t* header = L"Gesture";
-            switch (group) {
-            case kGroupWheelUp: header = L"Wheel Up"; break;
-            case kGroupWheelDown: header = L"Wheel Down"; break;
-            case kGroupRocker: header = L"Rocker"; break;
-            default: header = L"Gesture"; break;
-            }
+        const wchar_t* group_title = L"Gesture";
+        switch (group) {
+        case kGroupWheelUp: group_title = L"Wheel Up"; break;
+        case kGroupWheelDown: group_title = L"Wheel Down"; break;
+        case kGroupRocker: group_title = L"Rocker"; break;
+        default: group_title = L"Gesture"; break;
+        }
 
+        if (groups_enabled_ && group != last_group) {
             LVGROUP lvgroup = {};
             lvgroup.cbSize = sizeof(lvgroup);
             lvgroup.mask = LVGF_HEADER | LVGF_GROUPID | LVGF_ALIGN;
             lvgroup.iGroupId = group;
             lvgroup.uAlign = LVGA_HEADER_LEFT;
-            lvgroup.pszHeader = const_cast<LPWSTR>(header);
-            ListView_InsertGroup(list_, -1, &lvgroup);
+            lvgroup.pszHeader = const_cast<LPWSTR>(group_title);
+            if (ListView_InsertGroup(list_, -1, &lvgroup) < 0) {
+                // Группы не поддерживаются - дальше показываем плоский список.
+                groups_enabled_ = false;
+            }
 
             last_group = group;
         }
 
-        const std::wstring gesture_text = wide_from_utf8(format_gesture(binding.gesture, settings_.alphabet));
+        std::wstring gesture_text = wide_from_utf8(format_gesture(binding.gesture, settings_.alphabet));
+        if (!groups_enabled_) {
+            // Плоский режим: тип жеста виден прямо в первой колонке.
+            if (group != kGroupGesture) {
+                gesture_text = std::wstring(group_title) + L": " + gesture_text;
+            }
+        }
+
         const std::wstring command_text =
             wide_from_utf8(std::string(group_label(binding.group)) + ": " + binding.command_path);
         const std::wstring place_text = wide_from_utf8(place_label(binding.place));
 
         LVITEMW item = {};
-        item.mask = LVIF_TEXT | LVIF_PARAM | LVIF_GROUPID;
+        item.mask = LVIF_TEXT | LVIF_PARAM;
         item.iItem = static_cast<int>(i);
-        item.iGroupId = group;
+        if (groups_enabled_) {
+            item.mask |= LVIF_GROUPID;
+            item.iGroupId = group;
+        }
         item.lParam = static_cast<LPARAM>(i);
         item.pszText = const_cast<LPWSTR>(gesture_text.c_str());
 
@@ -717,11 +862,21 @@ void GesturePreferencesInstance::refresh_list() {
     }
 
     if (previous >= 0 && previous < static_cast<int>(settings_.bindings.size())) {
-        ListView_SetItemState(list_, previous, LVIS_SELECTED | LVIS_FOCUSED,
-                              LVIS_SELECTED | LVIS_FOCUSED);
+        select_binding(previous);
     }
-    update_buttons();
     updating_ = was_updating;
+
+    // Страховка: если group view включён, но строки не отрисовались
+    // (встречается на некоторых сборках comctl32), перерисовываем плоским списком.
+    if (groups_enabled_ && !settings_.bindings.empty() && ListView_GetItemCount(list_) == 0) {
+        groups_enabled_ = false;
+        ListView_EnableGroupView(list_, FALSE);
+        ListView_RemoveAllGroups(list_);
+        refresh_list();
+        return;
+    }
+
+    update_buttons();
 }
 
 void GesturePreferencesInstance::refresh_gesture_text() {
@@ -735,12 +890,36 @@ void GesturePreferencesInstance::refresh_command_list() {
     const std::string group_id = current_group_id();
     catalog_ = list_commands(group_id);
 
-    ComboBox_ResetContent(command_combo_);
-    for (const auto& entry : catalog_) {
-        const std::wstring label = wide_from_utf8(entry.path);
-        ComboBox_AddString(command_combo_, label.c_str());
+    if (!diagnostics_logged_) {
+        diagnostics_logged_ = true;
+        FB2K_console_formatter() << "Mouse Gesture Host: " << static_cast<t_size>(settings_.bindings.size())
+                                 << " gesture bindings, " << static_cast<t_size>(catalog_.size())
+                                 << " commands in group \"" << group_id.c_str() << "\"";
     }
-    if (!catalog_.empty()) ComboBox_SetCurSel(command_combo_, 0);
+
+    if (catalog_.empty() && group_id == "main") {
+        FB2K_console_formatter() << "Mouse Gesture Host: the main menu returned no commands "
+                                    "(menu not ready?)";
+    }
+
+    ComboBox_ResetContent(command_combo_);
+    if (catalog_.empty()) {
+        // Пустой список - не повод молча не работать кнопке Add New:
+        // показываем причину прямо в выпадающем списке.
+        const wchar_t* placeholder = group_id == "main"
+            ? L"(main menu is not available yet)"
+            : L"(nothing selected - pick tracks first)";
+        ComboBox_AddString(command_combo_, placeholder);
+        ComboBox_SetCurSel(command_combo_, -1);
+    } else {
+        for (const auto& entry : catalog_) {
+            const std::wstring label = wide_from_utf8(entry.path);
+            ComboBox_AddString(command_combo_, label.c_str());
+        }
+        ComboBox_SetCurSel(command_combo_, 0);
+    }
+
+    update_buttons();
 }
 
 void GesturePreferencesInstance::update_buttons() {
@@ -748,7 +927,10 @@ void GesturePreferencesInstance::update_buttons() {
     const int count = static_cast<int>(settings_.bindings.size());
     const bool has_selection = selected >= 0 && selected < count;
 
-    EnableWindow(update_button_, has_selection);
+    const bool has_command = !catalog_.empty() && ComboBox_GetCurSel(command_combo_) >= 0;
+
+    EnableWindow(add_button_, has_command);
+    EnableWindow(update_button_, has_selection && has_command);
     EnableWindow(delete_button_, has_selection);
     EnableWindow(move_up_button_, has_selection && selected > 0);
     EnableWindow(move_down_button_, has_selection && selected + 1 < count);
@@ -763,8 +945,10 @@ void GesturePreferencesInstance::on_group_changed() {
     refresh_command_list();
 }
 
-void GesturePreferencesInstance::on_list_selection_changed(int index) {
+void GesturePreferencesInstance::on_list_selection_changed(int display_row) {
     if (updating_) return;
+
+    const int index = binding_index_from_display(display_row);
     if (index < 0 || index >= static_cast<int>(settings_.bindings.size())) return;
 
     const GestureBinding& binding = settings_.bindings[static_cast<std::size_t>(index)];
@@ -816,13 +1000,20 @@ void GesturePreferencesInstance::on_list_selection_changed(int index) {
 void GesturePreferencesInstance::on_add() {
     const std::string gesture = editor_gesture();
     if (gesture.empty()) {
-        MessageBeep(MB_ICONWARNING);
+        MessageBoxW(hwnd_,
+                    L"Сначала соберите жест: нажмите кнопки-стрелки, "
+                    L"wheel или rocker в левой части страницы.",
+                    L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
         return;
     }
 
     const int command_index = ComboBox_GetCurSel(command_combo_);
-    if (command_index < 0 || command_index >= static_cast<int>(catalog_.size())) {
-        MessageBeep(MB_ICONWARNING);
+    if (catalog_.empty() || command_index < 0 || command_index >= static_cast<int>(catalog_.size())) {
+        MessageBoxW(hwnd_,
+                    L"Не выбрана команда.\n\n"
+                    L"Для групп context(...) выделите треки в плейлисте (список команд "
+                    L"строится по текущему выделению) либо выберите группу \"main menu\".",
+                    L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
         return;
     }
 
@@ -836,8 +1027,7 @@ void GesturePreferencesInstance::on_add() {
     refresh_list();
 
     const int last = static_cast<int>(settings_.bindings.size()) - 1;
-    ListView_SetItemState(list_, last, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-    ListView_EnsureVisible(list_, last, FALSE);
+    select_binding(last);
 
     update_buttons();
     set_dirty(true);
@@ -849,13 +1039,15 @@ void GesturePreferencesInstance::on_update() {
 
     const std::string gesture = editor_gesture();
     if (gesture.empty()) {
-        MessageBeep(MB_ICONWARNING);
+        MessageBoxW(hwnd_, L"Сначала соберите жест в левой части страницы.",
+                    L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
         return;
     }
 
     const int command_index = ComboBox_GetCurSel(command_combo_);
-    if (command_index < 0 || command_index >= static_cast<int>(catalog_.size())) {
-        MessageBeep(MB_ICONWARNING);
+    if (catalog_.empty() || command_index < 0 || command_index >= static_cast<int>(catalog_.size())) {
+        MessageBoxW(hwnd_, L"Не выбрана команда - обновлять нечего.",
+                    L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
         return;
     }
 
@@ -867,7 +1059,7 @@ void GesturePreferencesInstance::on_update() {
 
     settings_.bindings[static_cast<std::size_t>(index)] = binding;
     refresh_list();
-    ListView_SetItemState(list_, index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    select_binding(index);
 
     set_dirty(true);
 }
@@ -879,12 +1071,11 @@ void GesturePreferencesInstance::on_delete() {
     settings_.bindings.erase(settings_.bindings.begin() + index);
     refresh_list();
 
-    const int new_index = index < static_cast<int>(settings_.bindings.size()) ? index
-                                                                              : static_cast<int>(settings_.bindings.size()) - 1;
-    if (new_index >= 0) {
-        ListView_SetItemState(list_, new_index, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-        ListView_EnsureVisible(list_, new_index, FALSE);
-    }
+    const int new_index = index < static_cast<int>(settings_.bindings.size())
+        ? index
+        : static_cast<int>(settings_.bindings.size()) - 1;
+    if (new_index >= 0) select_binding(new_index);
+
     update_buttons();
     set_dirty(true);
 }
@@ -900,8 +1091,7 @@ void GesturePreferencesInstance::on_move(int delta) {
               settings_.bindings[static_cast<std::size_t>(target)]);
 
     refresh_list();
-    ListView_SetItemState(list_, target, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
-    ListView_EnsureVisible(list_, target, FALSE);
+    select_binding(target);
     update_buttons();
     set_dirty(true);
 }
@@ -973,9 +1163,39 @@ std::string GesturePreferencesInstance::current_place_id() const {
     return "main_window";
 }
 
+int GesturePreferencesInstance::binding_index_from_display(int display_row) const {
+    if (list_ == nullptr || display_row < 0) return -1;
+
+    LVITEMW item = {};
+    item.mask = LVIF_PARAM;
+    item.iItem = display_row;
+    if (!ListView_GetItem(list_, &item)) return -1;
+    return static_cast<int>(item.lParam);
+}
+
+int GesturePreferencesInstance::display_row_from_binding_index(int binding_index) const {
+    if (list_ == nullptr || binding_index < 0) return -1;
+
+    const int count = ListView_GetItemCount(list_);
+    for (int row = 0; row < count; ++row) {
+        if (binding_index_from_display(row) == binding_index) return row;
+    }
+    return -1;
+}
+
+void GesturePreferencesInstance::select_binding(int binding_index) {
+    const int row = display_row_from_binding_index(binding_index);
+    if (row < 0) return;
+
+    ListView_SetItemState(list_, row, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+    ListView_EnsureVisible(list_, row, FALSE);
+}
+
 int GesturePreferencesInstance::selected_row() const {
     if (list_ == nullptr) return -1;
-    return ListView_GetNextItem(list_, -1, LVNI_SELECTED);
+
+    const int display = ListView_GetNextItem(list_, -1, LVNI_SELECTED);
+    return binding_index_from_display(display);
 }
 
 int GesturePreferencesInstance::read_stroke_length() const {
@@ -1013,6 +1233,17 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
     case WM_SIZE:
         layout();
         return 0;
+
+    case WM_SHOWWINDOW:
+        // Хост не всегда присылает WM_SIZE после показа страницы, поэтому
+        // подгоняем размер под клиентскую область родителя при показе.
+        if (wparam != 0) {
+            fit_to_parent();
+            layout();
+            // Меню могло быть недоступно в момент создания страницы.
+            if (catalog_.empty()) refresh_command_list();
+        }
+        break;
 
     case WM_ERASEBKGND: {
         if (background_brush_ == nullptr) break;

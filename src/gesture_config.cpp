@@ -17,6 +17,8 @@ enum : int {
     flag_disabled = 1 << 0,
     flag_alphabet = 1 << 1,
     flag_first_only = 1 << 2,
+    //! Настройки уже применялись; иначе при первом запуске подставляем стандартные привязки.
+    flag_initialized = 1 << 3,
 };
 
 std::string escape_field(std::string_view text) {
@@ -93,6 +95,13 @@ GestureSettings GestureConfig::load_from_storage() const {
     const pfc::string8 stored = g_cfg_bindings.get();
     settings.bindings = deserialize(std::string_view(stored.c_str(), stored.length()));
 #endif
+
+    // Первый запуск: конфигурация ещё ни разу не сохранялась - показываем
+    // стандартные привязки, чтобы таблица не была пустой.
+    if ((flags & flag_initialized) == 0) {
+        settings.bindings = defaults().bindings;
+    }
+
     return settings;
 }
 
@@ -104,6 +113,7 @@ void GestureConfig::apply(const GestureSettings& settings) {
     if (normalized.disabled) flags |= flag_disabled;
     if (normalized.alphabet) flags |= flag_alphabet;
     if (normalized.first_only) flags |= flag_first_only;
+    flags |= flag_initialized;
 
     g_cfg_stroke_length = normalized.stroke_length;
     g_cfg_flags = flags;
