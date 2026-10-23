@@ -149,7 +149,7 @@ public:
     HWND create(HWND parent, int id) {
         register_class();
         return CreateWindowExW(WS_EX_CLIENTEDGE, class_name(), L"",
-                               WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP,
+                               WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP,
                                0, 0, 100, 100, parent,
                                reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                                core_api::get_my_instance(), this);
@@ -178,13 +178,6 @@ public:
         selected_ = -1;
         scroll_ = 0;
         update_scroll_info();
-        invalidate();
-    }
-
-    void set_columns(int gesture, int command, int place) {
-        column_gesture_ = gesture;
-        column_command_ = command;
-        column_place_ = place;
         invalidate();
     }
 
@@ -245,7 +238,10 @@ private:
 
         HGDIOBJ old_font = SelectObject(dc, font_);
         TEXTMETRICW metrics = {};
-        if (GetTextMetricsW(dc, &metrics)) row_height_ = static_cast<int>(metrics.tmHeight) + scale(8);
+        if (GetTextMetricsW(dc, &metrics)) {
+            row_height_ = static_cast<int>(metrics.tmHeight) + scale(8);
+            column_header_height_ = static_cast<int>(metrics.tmHeight) + scale(6);
+        }
 
         SelectObject(dc, header_font_ != nullptr ? header_font_ : font_);
         if (GetTextMetricsW(dc, &metrics)) header_height_ = static_cast<int>(metrics.tmHeight) + scale(12);
@@ -255,6 +251,7 @@ private:
 
         if (row_height_ < scale(18)) row_height_ = scale(18);
         if (header_height_ < scale(22)) header_height_ = scale(22);
+        if (column_header_height_ < scale(20)) column_header_height_ = scale(20);
 
         update_scroll_info();
     }
@@ -267,12 +264,52 @@ private:
         return total;
     }
 
-    void update_scroll_info() {
-        if (hwnd_ == nullptr) return;
+    int columns_width() const {
+        return columns_[0] + columns_[1] + columns_[2];
+    }
+
+    //! Пропорциональная ширина по умолчанию. После ручного изменения ширины
+    //! колонки больше не пересчитываются, как у обычного ListView.
+    void layout_columns() {
+        if (columns_customized_ || hwnd_ == nullptr) return;
 
         RECT client = {};
         GetClientRect(hwnd_, &client);
-        const int page = client.bottom - client.top;
+        const int width = client.right - client.left;
+        if (width <= 0) return;
+
+        const int min_gesture = scale(60);
+        const int min_command = scale(160);
+        const int min_place = scale(80);
+
+        int gesture = width * 22 / 100;
+        int command = width * 58 / 100;
+        int place = width - gesture - command;
+
+        if (place < min_place) {
+            place = min_place;
+            command = width - gesture - place;
+        }
+        if (command < min_command) {
+            command = min_command;
+            gesture = width - command - place;
+        }
+        if (gesture < min_gesture) gesture = min_gesture;
+
+        columns_[0] = gesture;
+        columns_[1] = command;
+        columns_[2] = place;
+    }
+
+    void update_scroll_info() {
+        if (hwnd_ == nullptr) return;
+
+        layout_columns();
+
+        RECT client = {};
+        GetClientRect(hwnd_, &client);
+        int page = client.bottom - client.top - column_header_height_;
+        if (page < 0) page = 0;
         const int total = content_height();
 
         SCROLLINFO info = {};
@@ -280,9 +317,25 @@ private:
         info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
         info.nMin = 0;
         info.nMax = total > 0 ? total - 1 : 0;
-        info.nPage = static_cast<UINT>(page > 0 ? page : 0);
+        info.nPage = static_cast<UINT>(page);
         info.nPos = scroll_;
         SetScrollInfo(hwnd_, SB_VERT, &info, TRUE);
+
+        // Вертикальная полоса уменьшает клиентскую ширину. Учитываем это
+        // перед расчётом горизонтального диапазона и положения колонок.
+        layout_columns();
+        GetClientRect(hwnd_, &client);
+        const int page_width = client.right - client.left > 0 ? client.right - client.left : 0;
+        const int total_width = columns_width();
+
+        info = {};
+        info.cbSize = sizeof(info);
+        info.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+        info.nMin = 0;
+        info.nMax = total_width > 0 ? total_width - 1 : 0;
+        info.nPage = static_cast<UINT>(page_width);
+        info.nPos = scroll_x_;
+        SetScrollInfo(hwnd_, SB_HORZ, &info, TRUE);
 
         clamp_scroll();
     }
@@ -290,10 +343,15 @@ private:
     void clamp_scroll() {
         RECT client = {};
         GetClientRect(hwnd_, &client);
-        const int page = client.bottom - client.top;
+        const int page = client.bottom - client.top - column_header_height_;
         const int max_scroll = content_height() - page;
         if (scroll_ > max_scroll) scroll_ = max_scroll;
         if (scroll_ < 0) scroll_ = 0;
+
+        const int page_width = client.right - client.left;
+        const int max_scroll_x = columns_width() - page_width;
+        if (scroll_x_ > max_scroll_x) scroll_x_ = max_scroll_x;
+        if (scroll_x_ < 0) scroll_x_ = 0;
     }
 
     void scroll_to(int position) {
@@ -301,6 +359,33 @@ private:
         clamp_scroll();
         update_scroll_info();
         invalidate();
+    }
+
+    void scroll_horizontal_to(int position) {
+        scroll_x_ = position;
+        clamp_scroll();
+        update_scroll_info();
+        invalidate();
+    }
+
+    int column_divider_at(int x, int y) const {
+        if (y < 0 || y >= column_header_height_) return -1;
+
+        const int tolerance = scale(3);
+        int divider = -scroll_x_;
+        for (int column = 0; column < 3; ++column) {
+            divider += columns_[column];
+            if (x >= divider - tolerance && x <= divider + tolerance) return column;
+        }
+        return -1;
+    }
+
+    int min_column_width(int column) const {
+        switch (column) {
+        case 0: return scale(60);
+        case 1: return scale(160);
+        default: return scale(80);
+        }
     }
 
     void scroll_to_row(int row_index) {
@@ -314,16 +399,16 @@ private:
 
         RECT client = {};
         GetClientRect(hwnd_, &client);
-        const int page = client.bottom - client.top;
+        const int page = client.bottom - client.top - column_header_height_;
 
         if (top < scroll_) scroll_to(top);
         else if (top + height > scroll_ + page) scroll_to(top + height - page);
     }
 
     int row_at(int client_y) const {
-        if (rows_ == nullptr) return -1;
+        if (rows_ == nullptr || client_y < column_header_height_) return -1;
 
-        int y = -scroll_;
+        int y = column_header_height_ - scroll_;
         for (std::size_t i = 0; i < rows_->size(); ++i) {
             const int height = row_height((*rows_)[i].is_header);
             if (client_y >= y && client_y < y + height) return static_cast<int>(i);
@@ -343,6 +428,7 @@ private:
     }
 
     void paint(HDC target, const RECT& client);
+    void draw_column_header(HDC dc, const RECT& client);
     void draw_row(HDC dc, const RECT& row_rect, const GestureListRow& row, bool selected);
 
     LRESULT window_proc(UINT msg, WPARAM wparam, LPARAM lparam);
@@ -356,14 +442,19 @@ private:
 
     int row_height_ = 22;
     int header_height_ = 26;
+    int column_header_height_ = 22;
 
-    int column_gesture_ = 160;
-    int column_command_ = 320;
-    int column_place_ = 120;
+    int columns_[3] = { 160, 320, 120 };
 
     int scroll_ = 0;
+    int scroll_x_ = 0;
     int selected_ = -1;
     bool focused_ = false;
+
+    bool columns_customized_ = false;
+    int resizing_column_ = -1;
+    int resize_anchor_x_ = 0;
+    int resize_start_width_ = 0;
 
     COLORREF background_ = RGB(32, 32, 32);
     COLORREF text_ = RGB(230, 230, 230);
@@ -432,14 +523,13 @@ void GestureListControl::draw_row(HDC dc, const RECT& row_rect, const GestureLis
     HGDIOBJ old_font = SelectObject(dc, font_);
 
     const std::wstring* cells[3] = { &row.gesture, &row.command, &row.place };
-    const int widths[3] = { column_gesture_, column_command_, column_place_ };
 
-    int left = rc.left;
+    int left = rc.left - scroll_x_;
     for (int column = 0; column < 3; ++column) {
         RECT cell = rc;
         cell.left = left + scale(6);
-        cell.right = left + widths[column] - scale(4);
-        left += widths[column];
+        cell.right = left + columns_[column] - scale(4);
+        left += columns_[column];
 
         if (cell.right <= cell.left) continue;
 
@@ -458,6 +548,49 @@ void GestureListControl::draw_row(HDC dc, const RECT& row_rect, const GestureLis
     SelectObject(dc, old_font);
 }
 
+void GestureListControl::draw_column_header(HDC dc, const RECT& client) {
+    RECT header = { 0, 0, client.right, column_header_height_ };
+    HBRUSH brush = CreateSolidBrush(header_background_);
+    FillRect(dc, &header, brush);
+    DeleteObject(brush);
+
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, text_);
+    HGDIOBJ old_font = SelectObject(dc, font_);
+
+    const wchar_t* titles[3] = { L"Gesture", L"Command", L"Place" };
+    int left = -scroll_x_;
+    for (int column = 0; column < 3; ++column) {
+        RECT cell = { left + scale(6), 0,
+                      left + columns_[column] - scale(4), column_header_height_ };
+        if (cell.right > cell.left && cell.right > 0 && cell.left < client.right) {
+            DrawTextW(dc, titles[column], -1, &cell,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+        left += columns_[column];
+    }
+
+    const int brightness = (GetRValue(header_background_) + GetGValue(header_background_) +
+                            GetBValue(header_background_)) / 3;
+    HPEN pen = CreatePen(PS_SOLID, 1, brightness > 128 ? RGB(180, 180, 180) : RGB(90, 90, 90));
+    HGDIOBJ old_pen = SelectObject(dc, pen);
+
+    left = -scroll_x_;
+    for (int column = 0; column < 2; ++column) {
+        left += columns_[column];
+        if (left >= 0 && left < client.right) {
+            MoveToEx(dc, left, scale(3), nullptr);
+            LineTo(dc, left, column_header_height_ - scale(3));
+        }
+    }
+    MoveToEx(dc, 0, column_header_height_ - 1, nullptr);
+    LineTo(dc, client.right, column_header_height_ - 1);
+
+    SelectObject(dc, old_pen);
+    DeleteObject(pen);
+    SelectObject(dc, old_font);
+}
+
 void GestureListControl::paint(HDC target, const RECT& client) {
     if (client.right - client.left <= 0 || client.bottom - client.top <= 0) return;
 
@@ -472,12 +605,16 @@ void GestureListControl::paint(HDC target, const RECT& client) {
 
     SelectObject(memory_dc, font_);
 
-    int y = -scroll_;
+    // Строки не должны залезать на закреплённую шапку при прокрутке.
+    const int rows_dc = SaveDC(memory_dc);
+    IntersectClipRect(memory_dc, 0, column_header_height_, client.right, client.bottom);
+
+    int y = column_header_height_ - scroll_;
     if (rows_ != nullptr) {
         for (std::size_t i = 0; i < rows_->size(); ++i) {
             const GestureListRow& row = (*rows_)[i];
             const int height = row_height(row.is_header);
-            if (y + height >= 0 && y < client.bottom) {
+            if (y + height > column_header_height_ && y < client.bottom) {
                 RECT row_rect = { 0, y, client.right, y + height };
                 draw_row(memory_dc, row_rect, row, static_cast<int>(i) == selected_);
             }
@@ -485,14 +622,19 @@ void GestureListControl::paint(HDC target, const RECT& client) {
         }
     }
 
+    RestoreDC(memory_dc, rows_dc);
+
     if (rows_ == nullptr || rows_->empty()) {
         RECT empty = client;
+        empty.top = column_header_height_;
         empty.left += scale(10);
         SetBkMode(memory_dc, TRANSPARENT);
         SetTextColor(memory_dc, muted_);
         DrawTextW(memory_dc, L"No bindings - click Reset.", -1, &empty,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
+
+    draw_column_header(memory_dc, client);
 
     BitBlt(target, 0, 0, client.right - client.left, client.bottom - client.top, memory_dc, 0, 0, SRCCOPY);
 
@@ -517,9 +659,21 @@ LRESULT GestureListControl::window_proc(UINT msg, WPARAM wparam, LPARAM lparam) 
         return 1;
 
     case WM_SIZE:
-        clamp_scroll();
         update_scroll_info();
+        invalidate();
         return 0;
+
+    case WM_SETCURSOR:
+        if (LOWORD(lparam) == HTCLIENT) {
+            POINT point = {};
+            GetCursorPos(&point);
+            ScreenToClient(hwnd_, &point);
+            if (resizing_column_ >= 0 || column_divider_at(point.x, point.y) >= 0) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+                return TRUE;
+            }
+        }
+        break;
 
     case WM_SETFOCUS:
         focused_ = true;
@@ -535,11 +689,52 @@ LRESULT GestureListControl::window_proc(UINT msg, WPARAM wparam, LPARAM lparam) 
         return DLGC_WANTARROWS | DLGC_WANTCHARS;
 
     case WM_LBUTTONDOWN: {
-        SetFocus(hwnd_);
-        const int row = row_at(GET_Y_LPARAM(lparam));
-        if (row >= 0) select_row(row, true);
+        const int x = GET_X_LPARAM(lparam);
+        const int y = GET_Y_LPARAM(lparam);
+        const int divider = column_divider_at(x, y);
+        if (divider >= 0) {
+            columns_customized_ = true;
+            resizing_column_ = divider;
+            resize_anchor_x_ = x;
+            resize_start_width_ = columns_[divider];
+            SetCapture(hwnd_);
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+            return 0;
+        }
+
+        if (y >= column_header_height_) {
+            SetFocus(hwnd_);
+            const int row = row_at(y);
+            if (row >= 0) select_row(row, true);
+        }
         return 0;
     }
+
+    case WM_MOUSEMOVE:
+        if (resizing_column_ >= 0) {
+            int width = resize_start_width_ + GET_X_LPARAM(lparam) - resize_anchor_x_;
+            const int minimum = min_column_width(resizing_column_);
+            if (width < minimum) width = minimum;
+            if (columns_[resizing_column_] != width) {
+                columns_[resizing_column_] = width;
+                update_scroll_info();
+                invalidate();
+            }
+            return 0;
+        }
+        break;
+
+    case WM_LBUTTONUP:
+        if (resizing_column_ >= 0) {
+            resizing_column_ = -1;
+            if (GetCapture() == hwnd_) ReleaseCapture();
+            return 0;
+        }
+        break;
+
+    case WM_CAPTURECHANGED:
+        resizing_column_ = -1;
+        return 0;
 
     case WM_MOUSEWHEEL: {
         const int delta = GET_WHEEL_DELTA_WPARAM(wparam);
@@ -550,7 +745,7 @@ LRESULT GestureListControl::window_proc(UINT msg, WPARAM wparam, LPARAM lparam) 
     case WM_VSCROLL: {
         RECT client = {};
         GetClientRect(hwnd_, &client);
-        const int page = client.bottom - client.top;
+        const int page = client.bottom - client.top - column_header_height_;
 
         switch (LOWORD(wparam)) {
         case SB_LINEUP: scroll_to(scroll_ - row_height_); break;
@@ -567,6 +762,31 @@ LRESULT GestureListControl::window_proc(UINT msg, WPARAM wparam, LPARAM lparam) 
         }
         case SB_TOP: scroll_to(0); break;
         case SB_BOTTOM: scroll_to(content_height()); break;
+        default: break;
+        }
+        return 0;
+    }
+
+    case WM_HSCROLL: {
+        RECT client = {};
+        GetClientRect(hwnd_, &client);
+        const int page = client.right - client.left;
+
+        switch (LOWORD(wparam)) {
+        case SB_LINELEFT: scroll_horizontal_to(scroll_x_ - scale(16)); break;
+        case SB_LINERIGHT: scroll_horizontal_to(scroll_x_ + scale(16)); break;
+        case SB_PAGELEFT: scroll_horizontal_to(scroll_x_ - page); break;
+        case SB_PAGERIGHT: scroll_horizontal_to(scroll_x_ + page); break;
+        case SB_THUMBTRACK:
+        case SB_THUMBPOSITION: {
+            SCROLLINFO info = {};
+            info.cbSize = sizeof(info);
+            info.fMask = SIF_TRACKPOS;
+            if (GetScrollInfo(hwnd_, SB_HORZ, &info)) scroll_horizontal_to(info.nTrackPos);
+            break;
+        }
+        case SB_LEFT: scroll_horizontal_to(0); break;
+        case SB_RIGHT: scroll_horizontal_to(columns_width()); break;
         default: break;
         }
         return 0;
@@ -694,12 +914,6 @@ private:
     // --- Win32 ---
     HWND hwnd_ = nullptr;
     HWND list_ = nullptr;
-
-    //! Шапка таблицы рисуется отдельными Static-контролами: заголовок
-    //! ListView в тёмной теме foobar2000 остаётся белым на белом.
-    HWND header_gesture_ = nullptr;
-    HWND header_command_ = nullptr;
-    HWND header_place_ = nullptr;
 
     //! Строки таблицы: заголовки групп и сами привязки.
     std::vector<GestureListRow> rows_;
@@ -964,16 +1178,12 @@ void GesturePreferencesInstance::create_children() {
                                  << static_cast<unsigned long>(GetLastError()) << ")";
     } else {
         list_control_.set_fonts(font_, header_font_, dpi_);
-        list_control_.set_columns(scale(160), scale(320), scale(120));
         list_control_.set_select_handler([this](int binding_index) {
             on_list_selection_changed(binding_index);
             update_buttons();
         });
     }
 
-    header_gesture_ = make_static(L"Gesture", SS_LEFT | SS_CENTERIMAGE);
-    header_command_ = make_static(L"Command", SS_LEFT | SS_CENTERIMAGE);
-    header_place_ = make_static(L"Place", SS_LEFT | SS_CENTERIMAGE);
     count_label_ = make_static(L"", SS_LEFT | SS_CENTERIMAGE);
     hint_label_ = make_static(
         L"1. Build a gesture using the buttons on the left.\r\n"
@@ -1104,10 +1314,9 @@ void GesturePreferencesInstance::layout() {
     const int gap = scale(6);
     const int label_height = scale(14);
     const int control_height = scale(22);
-    const int header_height = scale(16);
 
-    // Таблица начинается выше; высвобожденное место отдаём её строкам.
-    const int list_top = top_margin + header_height + scale(1);
+    // Встроенная шапка находится внутри рамки таблицы, как у ListView.
+    const int list_top = top_margin;
 
     // --- крестовина (D-Pad) -------------------------------------------------
     // Диагонали занимают углы: UL/UR находятся выше ↑, а DL/DR — ниже ↓.
@@ -1241,32 +1450,9 @@ void GesturePreferencesInstance::layout() {
     const int list_width = width - 2 * margin;
     MoveWindow(list_, margin, list_top, list_width, list_height, TRUE);
 
-    // Колонки таблицы: жест, команда, место.
-    int column_gesture = list_width * 22 / 100;
-    int column_command = list_width * 58 / 100;
-    int column_place = list_width - column_gesture - column_command;
-
-    const int min_place = scale(80);
-    const int min_command = scale(160);
-    if (column_place < min_place) {
-        column_place = min_place;
-        column_command = list_width - column_gesture - column_place;
-    }
-    if (column_command < min_command && list_width > min_command + min_place + scale(60)) {
-        column_command = min_command;
-        column_gesture = list_width - column_command - column_place;
-    }
-    if (column_gesture < scale(60)) column_gesture = scale(60);
-
-    list_control_.set_columns(column_gesture, column_command, column_place);
+    // Ширины колонок и обе полосы прокрутки пересчитываются по фактической
+    // клиентской области таблицы (без рамки и вертикального скроллбара).
     list_control_.refresh();
-
-    // Заголовки колонок (Static-контролы над таблицей).
-    const int header_x = margin + scale(6);
-    MoveWindow(header_gesture_, header_x, top_margin, column_gesture, header_height, TRUE);
-    MoveWindow(header_command_, header_x + column_gesture, top_margin, column_command, header_height, TRUE);
-    MoveWindow(header_place_, header_x + column_gesture + column_command, top_margin,
-               width - margin - (header_x + column_gesture + column_command), header_height, TRUE);
 
     // Подпись "Всего привязок" - отдельный Static, над крестовиной.
     MoveWindow(count_label_, margin + scale(6), count_top, list_width, count_height, TRUE);
