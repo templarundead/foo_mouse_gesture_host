@@ -2188,11 +2188,9 @@ void GesturePreferencesInstance::install_command_list_scroll_handler() {
 LRESULT CALLBACK GesturePreferencesInstance::command_list_subclass_proc(
     HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UINT_PTR subclass_id, DWORD_PTR ref_data) {
     if (msg == WM_VSCROLL && LOWORD(wparam) == SB_THUMBTRACK) {
-        // Windows шлёт это сообщение непрерывно при перетаскивании ползунка.
-        // Не перерисовываем сотни длинных строк на каждом шаге: ползунок
-        // продолжает двигаться, а SB_THUMBPOSITION при отпускании прокрутит
-        // список сразу в конечную позицию. Остальные способы прокрутки живые.
-        return 0;
+        // Стандартный LISTBOX должен получить track-сообщение: его оконная
+        // процедура обновляет top index и видимые строки до отпускания ползунка.
+        return DefSubclassProc(hwnd, msg, wparam, lparam);
     }
 
     if (msg == WM_NCDESTROY) {
