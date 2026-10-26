@@ -1,5 +1,6 @@
 #include "common.h"
 
+#include "component_version.h"
 #include "gesture_engine.h"
 
 // ---------------------------------------------------------------------------
@@ -8,7 +9,7 @@
 
 DECLARE_COMPONENT_VERSION(
     "Mouse Gesture Host",
-    "1.3.1",
+    MGH_COMPONENT_VERSION,
     "Mouse gestures for foobar2000 (v2.0+ / x64 / x86).\n"
     "\n"
     "Right-button drag gestures, diagonal strokes, wheel and rocker gestures.\n"

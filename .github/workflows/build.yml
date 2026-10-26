@@ -34,7 +34,7 @@ jobs:
 
       - name: Download foobar2000 SDK
         shell: pwsh
-        run: powershell -ExecutionPolicy Bypass -File tools\fetch-sdk.ps1 -Destination sdk -MirrorOnly
+        run: powershell -ExecutionPolicy Bypass -File tools\fetch-sdk.ps1 -Destination sdk
 
       - name: Set up MSBuild
         uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
@@ -83,10 +83,18 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $version = if ($env:GITHUB_REF -like 'refs/tags/*') {
-            $env:GITHUB_REF -replace '^refs/tags/', ''
-          } else {
-            'dev'
+          $versionHeader = Get-Content 'src\component_version.h' -Raw
+          $versionMatch = [regex]::Match($versionHeader, '(?m)^#define\s+MGH_COMPONENT_VERSION\s+"([0-9]+\.[0-9]+\.[0-9]+)"\s*$')
+          if (-not $versionMatch.Success) { throw 'Could not read MGH_COMPONENT_VERSION.' }
+          $sourceVersion = $versionMatch.Groups[1].Value
+
+          $version = "$sourceVersion-dev$env:GITHUB_RUN_NUMBER"
+          if ($env:GITHUB_REF -like 'refs/tags/*') {
+            $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
+            if ($tag -ne "v$sourceVersion") {
+              throw "Tag $tag does not match source version v$sourceVersion"
+            }
+            $version = $tag
           }
 
           $platform = '${{ matrix.platform }}'
@@ -119,29 +127,6 @@ jobs:
           path: dist/*.fb2k-component
           if-no-files-found: error
 
-  sdk-provenance:
-    name: Measure official SDK SHA-256
-    runs-on: windows-latest
-    steps:
-      - name: Download and hash official SDK without using it
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $archive = Join-Path $env:RUNNER_TEMP 'official-sdk.7z'
-          Invoke-WebRequest -Uri "https://www.foobar2000.org/downloads/$env:SDK_VERSION.7z" `
-            -OutFile $archive -UseBasicParsing
-          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          "SDK_HASH=$hash" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Set-Content -Path sdk-source.txt -Value "$hash  $env:SDK_VERSION.7z" -NoNewline
-          Write-Host "::notice title=OfficialSdkSha256::$hash"
-
-      - name: Publish measured SDK provenance
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: official-sdk-sha256-${{ env.SDK_HASH }}
-          path: sdk-source.txt
-          if-no-files-found: error
-
   release:
     name: Create GitHub release
     permissions:
@@ -151,6 +136,9 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
       - name: Download component packages
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -166,16 +154,69 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           $tag = $env:GITHUB_REF -replace '^refs/tags/', ''
+          $versionHeader = Get-Content 'src\component_version.h' -Raw
+          $versionMatch = [regex]::Match($versionHeader, '(?m)^#define\s+MGH_COMPONENT_VERSION\s+"([0-9]+\.[0-9]+\.[0-9]+)"\s*$')
+          if (-not $versionMatch.Success) { throw 'Could not read MGH_COMPONENT_VERSION.' }
+          if ($tag -ne "v$($versionMatch.Groups[1].Value)") {
+            throw "Tag $tag does not match source version v$($versionMatch.Groups[1].Value)"
+          }
+
+          $expected = @(
+            "foo_mouse_gesture_host-$tag-x64.fb2k-component",
+            "foo_mouse_gesture_host-$tag-x86.fb2k-component"
+          ) | Sort-Object
           $packages = @(
-            Get-ChildItem 'dist' -Filter '*.fb2k-component' -Recurse |
+            Get-ChildItem 'dist' -Filter '*.fb2k-component' -File -Recurse |
               Sort-Object Name |
               ForEach-Object { $_.FullName }
           )
-          if ($packages.Count -ne 2) {
-            throw "Expected x64 and x86 component packages, found $($packages.Count)"
+          $actual = @($packages | ForEach-Object { [System.IO.Path]::GetFileName($_) } | Sort-Object)
+          if ($packages.Count -ne 2 -or (Compare-Object $expected $actual)) {
+            throw "Expected exactly $expected; found $actual"
           }
 
-          gh release create $tag $packages `
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          foreach ($package in $packages) {
+            $name = [System.IO.Path]::GetFileName($package)
+            $architecture = if ($name.EndsWith('-x86.fb2k-component')) { 'x86' } else { 'x64' }
+            $expectedMachine = if ($architecture -eq 'x86') { 0x14C } else { 0x8664 }
+
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($package)
+            try {
+              if ($zip.Entries.Count -ne 1 -or $zip.Entries[0].FullName -ne 'foo_mouse_gesture_host.dll') {
+                throw "Unexpected contents in $name"
+              }
+              $stream = $zip.Entries[0].Open()
+              $memory = New-Object System.IO.MemoryStream
+              try {
+                $stream.CopyTo($memory)
+                $image = $memory.ToArray()
+              }
+              finally {
+                $memory.Dispose()
+                $stream.Dispose()
+              }
+            }
+            finally {
+              $zip.Dispose()
+            }
+
+            $peOffset = [BitConverter]::ToInt32($image, 0x3C)
+            $machine = [BitConverter]::ToUInt16($image, $peOffset + 4)
+            if ($machine -ne $expectedMachine) {
+              throw ("Unexpected machine in ${name}: 0x{0:X4}; expected 0x{1:X4}" -f $machine, $expectedMachine)
+            }
+          }
+
+          $checksums = Join-Path $PWD 'SHA256SUMS.txt'
+          $lines = @($packages | ForEach-Object {
+            $hash = (Get-FileHash $_ -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([System.IO.Path]::GetFileName($_))"
+          })
+          [System.IO.File]::WriteAllLines($checksums, $lines, [System.Text.UTF8Encoding]::new($false))
+          $assets = @($packages) + @($checksums)
+
+          gh release create $tag $assets `
             --title "Mouse Gesture Host $tag" `
             --generate-notes `
             --verify-tag

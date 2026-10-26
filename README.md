@@ -71,7 +71,9 @@
 2. Скачайте `foo_mouse_gesture_host-<версия>-x64.fb2k-component` для
    64-битного foobar2000 либо `foo_mouse_gesture_host-<версия>-x86.fb2k-component`
    для 32-битного.
-3. Дважды щёлкните по файлу — foobar2000 сам предложит установить компонент,
+3. При необходимости проверьте файл по приложенному `SHA256SUMS.txt`:
+   `Get-FileHash .\foo_mouse_gesture_host-<версия>-<архитектура>.fb2k-component -Algorithm SHA256`.
+4. Дважды щёлкните по файлу — foobar2000 сам предложит установить компонент,
    либо перетащите его в окно foobar2000.
 
 ### Вручную
@@ -286,22 +288,38 @@ msbuild foo_mouse_gesture_host.sln /m /p:Configuration=Release /p:Platform=Win32
 
 1. запускается на `windows-latest` при push в `main`, pull request, ручном
    запуске и при push тега `v*`;
-2. скачивает **официальный** SDK (`https://www.foobar2000.org/downloads/SDK-2023-09-23.7z`),
-   распаковывает его в `sdk/`;
+2. скачивает **официальный** SDK и распаковывает его только после проверки
+   закреплённого SHA-256; при недоступности источника использует GitHub mirror
+   с отдельным SHA-256. Незакреплённые Chocolatey-пакеты в сборке не используются;
 3. параллельно собирает `Release | x64` и `Release | Win32` через MSBuild;
-4. упаковывает каждую DLL в отдельный
+4. проверяет PE machine каждой DLL (`0x8664` / `0x14C`), упаковывает её в отдельный
    `foo_mouse_gesture_host-<версия>-<x64|x86>.fb2k-component` и загружает
    оба пакета как artifacts;
-5. при push тега вида `v1.0.0` ждёт успешной сборки обеих архитектур,
-   создаёт GitHub Release и прикрепляет к нему оба `.fb2k-component`.
+5. при push тега требует точного совпадения `vX.Y.Z` с
+   `MGH_COMPONENT_VERSION`, заново проверяет имена, состав ZIP и PE machine
+   ровно двух пакетов, создаёт `SHA256SUMS.txt` и прикрепляет к GitHub Release
+   оба `.fb2k-component` и checksums. Права `contents: write` есть только у release-job.
+
+Метка **Latest** на GitHub может указывать на более старый выпуск, пока новый тег
+ещё не опубликован: исходники и release-пакеты не считаются одной версией без
+описанной выше автоматической проверки.
 
 Чтобы выпустить новую версию:
 
 ```powershell
-# при необходимости поднимите версию в src/main.cpp (DECLARE_COMPONENT_VERSION)
-git tag v1.0.2
-git push origin v1.0.2
+# поднимите версию в src/component_version.h (MGH_COMPONENT_VERSION)
+git tag v1.3.1
+git push origin v1.3.1
 ```
+
+### Необязательная ручная подпись выпуска
+
+CI не содержит сертификатов и не подписывает DLL автоматически. Maintainer может
+подписать `foo_mouse_gesture_host.dll` своим код-signing сертификатом **до**
+упаковки `.fb2k-component`, например через `signtool sign /fd SHA256 /td SHA256
+/tr <timestamp-url> ...`. После подписи DLL нужно заново создать ZIP-пакет и
+`SHA256SUMS.txt`. Контрольная сумма подтверждает целостность файла, но не заменяет
+Authenticode-подпись; неизвестный сертификат не следует считать доверенным.
 
 ---
 
