@@ -6,16 +6,25 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\binding_index.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\command_catalog.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\gesture_config.cpp">
       <Filter>src</Filter>
     </ClCompile>
+    <ClCompile Include="src\gesture_config_serialization.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\gesture_engine.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\gesture_recognizer.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="src\gesture_session.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="src\gesture_tokens.cpp">
@@ -29,10 +38,19 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\binding_index.h">
+      <Filter>src</Filter>
+    </ClInclude>
     <ClInclude Include="src\command_catalog.h">
       <Filter>src</Filter>
     </ClInclude>
+    <ClInclude Include="src\command_identity.h">
+      <Filter>src</Filter>
+    </ClInclude>
     <ClInclude Include="src\common.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\component_version.h">
       <Filter>src</Filter>
     </ClInclude>
     <ClInclude Include="src\gesture_config.h">
@@ -44,7 +62,13 @@
     <ClInclude Include="src\gesture_recognizer.h">
       <Filter>src</Filter>
     </ClInclude>
+    <ClInclude Include="src\gesture_session.h">
+      <Filter>src</Filter>
+    </ClInclude>
     <ClInclude Include="src\gesture_tokens.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\logic_common.h">
       <Filter>src</Filter>
     </ClInclude>
     <ClInclude Include="src\preferences_page.h">

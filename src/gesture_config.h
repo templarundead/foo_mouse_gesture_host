@@ -14,6 +14,23 @@ struct GestureBinding {
     std::string command_path;
     //! Идентификатор места исполнения: main_window | playlist | now_playing.
     std::string place;
+    //! SDK command GUID в каноническом текстовом виде; пусто, если SDK его не предоставляет.
+    std::string command_guid;
+    //! SDK subcommand GUID для динамической команды; без command_guid не используется.
+    std::string subcommand_guid;
+    //! Путь индексов в дереве меню (например "0.4.2") для структурной проверки.
+    std::string node_path;
+
+    GestureBinding() = default;
+    GestureBinding(std::string p_gesture, std::string p_group, std::string p_command_path,
+                   std::string p_place, std::string p_command_guid = {},
+                   std::string p_subcommand_guid = {}, std::string p_node_path = {})
+        : gesture(std::move(p_gesture)), group(std::move(p_group)),
+          command_path(std::move(p_command_path)), place(std::move(p_place)),
+          command_guid(std::move(p_command_guid)), subcommand_guid(std::move(p_subcommand_guid)),
+          node_path(std::move(p_node_path)) {}
+
+    bool operator==(const GestureBinding&) const = default;
 };
 
 //! Полный набор настроек компонента.
@@ -25,11 +42,30 @@ struct GestureSettings {
     std::vector<GestureBinding> bindings;
 };
 
+enum class BindingSchema {
+    empty,
+    legacy_v1,
+    schema_v2,
+    unknown,
+};
+
+struct BindingDiagnostic {
+    std::size_t line = 0;
+    std::string message;
+};
+
+struct BindingParseResult {
+    BindingSchema schema = BindingSchema::empty;
+    std::vector<GestureBinding> bindings;
+    std::vector<BindingDiagnostic> diagnostics;
+    std::size_t dropped_rows = 0;
+    std::size_t duplicate_rows = 0;
+    //! false при malformed/corrupt строках. Полные дубликаты не делают таблицу corrupt.
+    bool valid = true;
+};
+
 //! Хранилище настроек поверх cfg_var foobar2000 + кэш для движка.
-//!
-//! Все методы, меняющие состояние, вызываются из главного потока
-//! (страница настроек). Движок читает cached(); мышиный хук приходит
-//! в тот же главный поток, поэтому дополнительная синхронизация не нужна.
+//! Изменения выполняет главный поток. Чистая сериализация доступна и без SDK.
 class GestureConfig {
 public:
     static GestureConfig& instance();
@@ -46,9 +82,9 @@ public:
     //! Настройки по умолчанию.
     static GestureSettings defaults();
 
-    //! Сериализация таблицы привязок в строку для cfg_string.
+    //! Schema v2 и строгий разбор legacy/v2; реализация не зависит от SDK.
     static std::string serialize(const std::vector<GestureBinding>& bindings);
-    static std::vector<GestureBinding> deserialize(std::string_view text);
+    static BindingParseResult deserialize(std::string_view text);
 
 private:
     GestureConfig();
@@ -59,8 +95,11 @@ private:
 //! Группы команд (для выпадающего списка "Group"). Пары "идентификатор, подпись".
 const std::vector<std::pair<const char*, const char*>>& command_groups();
 
-//! Места исполнения (для выпадающего списка "Place").
+//! Места исполнения (для выпадающего списка "Place"). Пары "идентификатор, подпись".
 const std::vector<std::pair<const char*, const char*>>& command_places();
+
+bool is_valid_command_group(std::string_view group_id);
+bool is_valid_command_place(std::string_view place_id);
 
 const char* group_label(std::string_view group_id);
 std::string group_id_from_label(std::string_view label);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common.h"
+#include "logic_common.h"
 
 namespace mgh {
 

@@ -1,26 +1,16 @@
 #pragma once
 
-#include "gesture_config.h"
+#include "command_identity.h"
 
 namespace mgh {
 
-//! Одна команда, доступная для привязки к жесту.
-struct CatalogEntry {
-    //! Полный путь команды внутри меню, например "Playback/Next".
-    std::string path;
-    //! Идентификатор группы, к которой относится команда.
-    std::string group;
-};
-
-//! Динамически собрать список команд указанной группы.
-//!
-//! Для группы "main" используется mainmenu_manager (главное меню
-//! foobar2000), для контекстных групп - contextmenu_manager, инициализированный
-//! текущим выделением / активным плейлистом / проигрываемым треком.
+//! Динамически собрать список команд указанной группы через SDK 2.0 menu_tree_item.
+//! Для контекстных групп используется текущее выделение / активный плейлист / трек.
 std::vector<CatalogEntry> list_commands(std::string_view group_id);
 
-//! Выполнить команду, привязанную к жесту.
-bool execute_binding(const GestureBinding& binding);
+//! Выполнить команду, привязанную к жесту. Только главный поток foobar2000.
+//! При false diagnostic содержит причину unavailable/conflict/ошибки исполнения.
+bool execute_binding(const GestureBinding& binding, std::string* diagnostic = nullptr);
 
 //! Путь без последнего сегмента ("A/B/C" -> "A/B").
 std::string path_parent(std::string_view path);

@@ -1,11 +1,11 @@
+#include "common.h"
 #include "command_catalog.h"
+
+#include <exception>
+#include <iterator>
 
 namespace mgh {
 namespace {
-
-//! База и запас идентификаторов для сгенерированных Win32-меню.
-constexpr UINT kMenuBase = 4096;
-constexpr UINT kMenuSpan = 8192;
 
 struct MainMenuRoot {
     const GUID* guid;
@@ -22,10 +22,19 @@ const MainMenuRoot kMainMenuRoots[] = {
     { &mainmenu_groups::help,     "Help" },
 };
 
-//! Алфавитный порядок для отображаемых путей команд. Сравнение через Windows
-//! учитывает язык пользователя и нечувствительно к регистру; исходный путь
-//! используется как детерминированный тайбрейк и при ошибке преобразования.
-bool command_path_less(const CatalogEntry& left, const CatalogEntry& right) {
+struct ResolvedEntry : CatalogEntry {
+    menu_tree_item::ptr item;
+};
+
+struct ResolvedCatalog {
+    std::vector<ResolvedEntry> entries;
+    //! Держим manager живым, пока используются его menu_tree_item.
+    std::vector<service_ptr> owners;
+    std::string error;
+};
+
+//! Алфавитный порядок для отображаемых путей команд.
+bool command_path_less(const ResolvedEntry& left, const ResolvedEntry& right) {
     const std::wstring left_text = wide_from_utf8(left.path);
     const std::wstring right_text = wide_from_utf8(right.path);
     const int comparison = CompareStringW(LOCALE_USER_DEFAULT, NORM_IGNORECASE,
@@ -35,48 +44,74 @@ bool command_path_less(const CatalogEntry& left, const CatalogEntry& right) {
     return left.path < right.path;
 }
 
-void sort_command_catalog(std::vector<CatalogEntry>& entries) {
+void sort_command_catalog(std::vector<ResolvedEntry>& entries) {
     std::stable_sort(entries.begin(), entries.end(), command_path_less);
 }
 
-bool read_menu_item(HMENU menu, int index, MENUITEMINFOW& info, std::string& text) {
-    wchar_t buffer[512] = {};
-    info = {};
-    info.cbSize = sizeof(info);
-    info.fMask = MIIM_FTYPE | MIIM_ID | MIIM_SUBMENU | MIIM_STRING;
-    info.dwTypeData = buffer;
-    info.cch = static_cast<UINT>(sizeof(buffer) / sizeof(buffer[0]) - 1);
-    if (!GetMenuItemInfoW(menu, static_cast<UINT>(index), TRUE, &info)) return false;
-    text = strip_mnemonics(utf8_from_wide(buffer));
-    return true;
+std::string format_node_path(const std::vector<std::size_t>& indices) {
+    std::string out;
+    for (const std::size_t index : indices) {
+        if (!out.empty()) out.push_back('.');
+        out += std::to_string(index);
+    }
+    return out;
 }
 
-bool generate_root(mainmenu_manager::ptr& manager, HMENU menu, const GUID& root) {
-    manager = mainmenu_manager::get();
-    if (!manager.is_valid()) return false;
-    manager->instantiate(root);
-    manager->generate_menu_win32(menu, kMenuBase, kMenuSpan, mainmenu_manager::flag_view_full);
-    return true;
+void log_catalog_exception(std::string_view group, std::string_view path, const char* detail) {
+    FB2K_console_formatter() << "Mouse Gesture Host: command provider failed in \""
+                             << group.data() << "\" at \"" << path.data() << "\": " << detail;
 }
 
-void walk_main_menu(HMENU menu, const std::string& prefix, std::vector<CatalogEntry>& out) {
-    const int count = GetMenuItemCount(menu);
-    for (int i = 0; i < count; ++i) {
-        MENUITEMINFOW info{};
-        std::string name;
-        if (!read_menu_item(menu, i, info, name)) continue;
-        if ((info.fType & MFT_SEPARATOR) != 0) continue;
-        if (name.empty()) continue;
+void walk_menu_tree(menu_tree_item& parent, const std::string& prefix, const std::string& group,
+                    std::vector<std::size_t>& indices, ResolvedCatalog& out) {
+    const std::size_t count = parent.childCount();
+    for (std::size_t i = 0; i < count; ++i) {
+        indices.push_back(i);
+        try {
+            menu_tree_item::ptr child = parent.childAt(i);
+            if (!child.is_valid()) {
+                indices.pop_back();
+                continue;
+            }
+            const auto type = child->type();
+            if (type == menu_tree_item::itemSeparator) {
+                indices.pop_back();
+                continue;
+            }
 
-        const std::string path = prefix.empty() ? name : prefix + "/" + name;
-        if (info.hSubMenu != nullptr) {
-            walk_main_menu(info.hSubMenu, path, out);
-        } else {
-            CatalogEntry entry;
-            entry.path = path;
-            entry.group = "main";
-            out.push_back(std::move(entry));
+            const char* raw_name = child->name();
+            const std::string name = raw_name != nullptr ? strip_mnemonics(raw_name) : std::string();
+            if (name.empty()) {
+                indices.pop_back();
+                continue;
+            }
+            const std::string path = prefix.empty() ? name : prefix + "/" + name;
+
+            if (type == menu_tree_item::itemSubmenu) {
+                walk_menu_tree(*child, path, group, indices, out);
+            } else if (type == menu_tree_item::itemCommand) {
+                ResolvedEntry resolved;
+                resolved.path = path;
+                resolved.group = group;
+                resolved.node_path = format_node_path(indices);
+
+                const GUID command_guid = child->commandGuid();
+                if (command_guid != pfc::guid_null) {
+                    resolved.command_guid = pfc::print_guid(command_guid).c_str();
+                }
+                const GUID subcommand_guid = child->subCommandGuid();
+                if (subcommand_guid != pfc::guid_null) {
+                    resolved.subcommand_guid = pfc::print_guid(subcommand_guid).c_str();
+                }
+                resolved.item = std::move(child);
+                out.entries.push_back(std::move(resolved));
+            }
+        } catch (const std::exception& e) {
+            log_catalog_exception(group, prefix, e.what());
+        } catch (...) {
+            log_catalog_exception(group, prefix, "unknown exception");
         }
+        indices.pop_back();
     }
 }
 
@@ -100,174 +135,71 @@ bool init_context(contextmenu_manager& manager, const std::string& group_id) {
     return true;
 }
 
-void walk_context(contextmenu_node& node, const std::string& prefix, const std::string& group_id,
-                  std::vector<CatalogEntry>& out) {
-    const t_size count = node.get_num_children();
-    for (t_size i = 0; i < count; ++i) {
-        contextmenu_node* child = node.get_child(i);
-        if (child == nullptr) continue;
-
-        const contextmenu_item_node::t_type type = child->get_type();
-        if (type == contextmenu_item_node::type_separator) continue;
-
-        const char* raw = child->get_name();
-        const std::string name = raw != nullptr ? strip_mnemonics(raw) : std::string();
-        if (name.empty()) continue;
-
-        const std::string path = prefix.empty() ? name : prefix + "/" + name;
-        if (type == contextmenu_item_node::type_group) {
-            walk_context(*child, path, group_id, out);
-        } else {
-            CatalogEntry entry;
-            entry.path = path;
-            entry.group = group_id;
-            out.push_back(std::move(entry));
-        }
-    }
-}
-
-std::vector<CatalogEntry> list_main_menu() {
-    std::vector<CatalogEntry> out;
-    for (const auto& root : kMainMenuRoots) {
-        HMENU menu = CreatePopupMenu();
-        if (menu == nullptr) continue;
-
+ResolvedCatalog list_main_menu() {
+    ResolvedCatalog out;
+    for (std::size_t root_index = 0; root_index < std::size(kMainMenuRoots); ++root_index) {
+        const auto& root = kMainMenuRoots[root_index];
         try {
-            mainmenu_manager::ptr manager;
-            if (generate_root(manager, menu, *root.guid)) {
-                walk_main_menu(menu, root.label, out);
+            mainmenu_manager_v2::ptr manager = mainmenu_manager_v2::tryGet();
+            if (!manager.is_valid()) {
+                out.error = "mainmenu_manager_v2 is unavailable";
+                continue;
             }
+            manager->instantiate(*root.guid);
+            menu_tree_item::ptr tree = manager->generate_menu(mainmenu_manager::flag_view_full);
+            if (!tree.is_valid()) {
+                out.error = "main menu returned no menu tree";
+                continue;
+            }
+
+            out.owners.push_back(manager);
+            std::vector<std::size_t> indices{ root_index };
+            walk_menu_tree(*tree, root.label, "main", indices, out);
+        } catch (const std::exception& e) {
+            log_catalog_exception("main", root.label, e.what());
+            out.error = e.what();
         } catch (...) {
-            // Один "проблемный" поставщик команд не должен ломать весь список.
+            log_catalog_exception("main", root.label, "unknown exception");
+            out.error = "unknown main menu provider exception";
         }
-        DestroyMenu(menu);
     }
     return out;
 }
 
-std::vector<CatalogEntry> list_context_menu(const std::string& group_id) {
-    std::vector<CatalogEntry> out;
-
-    contextmenu_manager::ptr manager;
-    contextmenu_manager::g_create(manager);
-    if (!manager.is_valid()) return out;
-
-    if (!init_context(*manager, group_id)) return out;
-
-    contextmenu_node* root = manager->get_root();
-    if (root == nullptr) return out;
-
-    walk_context(*root, std::string(), group_id, out);
-    return out;
-}
-
-bool find_main_item(HMENU menu, const std::string& prefix, const std::string& target_path,
-                    const std::string& target_leaf, bool by_leaf, UINT& id) {
-    const int count = GetMenuItemCount(menu);
-    for (int i = 0; i < count; ++i) {
-        MENUITEMINFOW info{};
-        std::string name;
-        if (!read_menu_item(menu, i, info, name)) continue;
-        if ((info.fType & MFT_SEPARATOR) != 0) continue;
-        if (name.empty()) continue;
-
-        const std::string path = prefix.empty() ? name : prefix + "/" + name;
-        if (info.hSubMenu != nullptr) {
-            if (find_main_item(info.hSubMenu, path, target_path, target_leaf, by_leaf, id)) return true;
-        } else {
-            const bool matches = by_leaf ? (name == target_leaf) : (path == target_path);
-            if (matches) {
-                id = info.wID;
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-contextmenu_node* find_context_item(contextmenu_node& node, const std::string& prefix,
-                                    const std::string& target_path, const std::string& target_leaf,
-                                    bool by_leaf) {
-    const t_size count = node.get_num_children();
-    for (t_size i = 0; i < count; ++i) {
-        contextmenu_node* child = node.get_child(i);
-        if (child == nullptr) continue;
-
-        const contextmenu_item_node::t_type type = child->get_type();
-        if (type == contextmenu_item_node::type_separator) continue;
-
-        const char* raw = child->get_name();
-        const std::string name = raw != nullptr ? strip_mnemonics(raw) : std::string();
-        if (name.empty()) continue;
-
-        const std::string path = prefix.empty() ? name : prefix + "/" + name;
-        if (type == contextmenu_item_node::type_group) {
-            if (contextmenu_node* found = find_context_item(*child, path, target_path, target_leaf, by_leaf)) {
-                return found;
-            }
-        } else {
-            const bool matches = by_leaf ? (name == target_leaf) : (path == target_path);
-            if (matches) return child;
-        }
-    }
-    return nullptr;
-}
-
-bool execute_main_menu(const std::string& path) {
-    const std::string leaf = path_leaf(path);
-
-    for (const auto& root : kMainMenuRoots) {
-        HMENU menu = CreatePopupMenu();
-        if (menu == nullptr) continue;
-
-        bool executed = false;
-        try {
-            mainmenu_manager::ptr manager;
-            if (generate_root(manager, menu, *root.guid)) {
-                const std::string prefix = std::string(root.label) + "/";
-                UINT id = 0;
-                if (find_main_item(menu, prefix, path, leaf, false, id) ||
-                    find_main_item(menu, prefix, path, leaf, true, id)) {
-                    executed = manager->execute_command(id - kMenuBase);
-                }
-            }
-        } catch (...) {
-            executed = false;
-        }
-        DestroyMenu(menu);
-
-        if (executed) return true;
-    }
-    return false;
-}
-
-bool execute_context_menu(const std::string& group_id, const std::string& place_id, const std::string& path) {
-    std::string context = group_id;
-    if (place_id == "playlist") {
-        context = "context_playlist";
-    } else if (place_id == "now_playing") {
-        context = "context_now_playing";
-    }
-
-    contextmenu_manager::ptr manager;
-    contextmenu_manager::g_create(manager);
-    if (!manager.is_valid()) return false;
-    if (!init_context(*manager, context)) return false;
-
-    contextmenu_node* root = manager->get_root();
-    if (root == nullptr) return false;
-
-    const std::string leaf = path_leaf(path);
-    contextmenu_node* item = find_context_item(*root, std::string(), path, leaf, false);
-    if (item == nullptr) item = find_context_item(*root, std::string(), path, leaf, true);
-    if (item == nullptr) return false;
-
+ResolvedCatalog list_context_menu(const std::string& context_group,
+                                  const std::string& identity_group) {
+    ResolvedCatalog out;
     try {
-        item->execute();
+        contextmenu_manager_v2::ptr manager = contextmenu_manager_v2::tryGet();
+        if (!manager.is_valid()) {
+            out.error = "contextmenu_manager_v2 is unavailable";
+            return out;
+        }
+        if (!init_context(*manager, context_group)) return out;
+
+        menu_tree_item::ptr tree = manager->build_menu();
+        if (!tree.is_valid()) {
+            out.error = "context menu returned no menu tree";
+            return out;
+        }
+
+        out.owners.push_back(manager);
+        std::vector<std::size_t> indices{ 0 };
+        walk_menu_tree(*tree, std::string(), identity_group, indices, out);
+    } catch (const std::exception& e) {
+        log_catalog_exception(identity_group, "", e.what());
+        out.error = e.what();
     } catch (...) {
-        return false;
+        log_catalog_exception(identity_group, "", "unknown exception");
+        out.error = "unknown context menu provider exception";
     }
-    return true;
+    return out;
+}
+
+std::string effective_context_group(const GestureBinding& binding) {
+    if (binding.place == "playlist") return "context_playlist";
+    if (binding.place == "now_playing") return "context_now_playing";
+    return binding.group;
 }
 
 } // namespace
@@ -285,24 +217,48 @@ std::string path_leaf(std::string_view path) {
 }
 
 std::vector<CatalogEntry> list_commands(std::string_view group_id) {
-    try {
-        auto entries = group_id == "main"
-            ? list_main_menu()
-            : list_context_menu(std::string(group_id));
-        sort_command_catalog(entries);
-        return entries;
-    } catch (...) {
-        return {};
+    ResolvedCatalog resolved = group_id == "main"
+        ? list_main_menu()
+        : list_context_menu(std::string(group_id), std::string(group_id));
+    sort_command_catalog(resolved.entries);
+
+    std::vector<CatalogEntry> out;
+    out.reserve(resolved.entries.size());
+    for (const auto& entry : resolved.entries) {
+        out.push_back(static_cast<const CatalogEntry&>(entry));
     }
+    return out;
 }
 
-bool execute_binding(const GestureBinding& binding) {
-    if (binding.command_path.empty()) return false;
-
-    if (binding.group == "main") {
-        return execute_main_menu(binding.command_path);
+bool execute_binding(const GestureBinding& binding, std::string* diagnostic) {
+    if (diagnostic != nullptr) diagnostic->clear();
+    if (binding.command_path.empty()) {
+        if (diagnostic != nullptr) *diagnostic = "empty command path";
+        return false;
     }
-    return execute_context_menu(binding.group, binding.place, binding.command_path);
+
+    ResolvedCatalog resolved = binding.group == "main"
+        ? list_main_menu()
+        : list_context_menu(effective_context_group(binding), binding.group);
+    const CommandMatch match = resolve_command(binding, resolved.entries);
+    if (match.status != CommandResolution::found) {
+        if (diagnostic != nullptr) {
+            *diagnostic = match.message;
+            if (!resolved.error.empty()) *diagnostic += "; " + resolved.error;
+        }
+        return false;
+    }
+
+    try {
+        resolved.entries[match.index].item->execute(service_ptr());
+    } catch (const std::exception& e) {
+        if (diagnostic != nullptr) *diagnostic = std::string("command execution failed: ") + e.what();
+        return false;
+    } catch (...) {
+        if (diagnostic != nullptr) *diagnostic = "command execution failed: unknown exception";
+        return false;
+    }
+    return true;
 }
 
 } // namespace mgh

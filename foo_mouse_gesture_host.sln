@@ -11,6 +11,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "foobar2000_SDK", "sdk\fooba
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "foobar2000_component_client", "sdk\foobar2000\foobar2000_component_client\foobar2000_component_client.vcxproj", "{71AD2674-065B-48F5-B8B0-E1F9D3892081}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "logic_tests", "tests\logic_tests.vcxproj", "{79DFEC85-D36C-4392-ADF2-5FD7307EDAAB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Win32 = Debug|Win32
@@ -51,6 +53,14 @@ Global
 		{71AD2674-065B-48F5-B8B0-E1F9D3892081}.Release|Win32.Build.0 = Release|Win32
 		{71AD2674-065B-48F5-B8B0-E1F9D3892081}.Release|x64.ActiveCfg = Release|x64
 		{71AD2674-065B-48F5-B8B0-E1F9D3892081}.Release|x64.Build.0 = Release|x64
+		{79DFEC85-D36C-4392-ADF2-5FD7307EDAAB}.Debug|Win32.ActiveCfg = Debug|Win32
+		{79DFEC85-D36C-4392-ADF2-5FD7307EDAAB}.Debug|Win32.Build.0 = Debug|Win32
+		{79DFEC85-D36C-4392-ADF2-5FD7307EDAAB}.Debug|x64.ActiveCfg = Debug|x64
+		{79DFEC85-D36C-4392-ADF2-5FD7307EDAAB}.Debug|x64.Build.0 = Debug|x64
+		{79DFEC85-D36C-4392-ADF2-5FD7307EDAAB}.Release|Win32.ActiveCfg = Release|Win32
+		{79DFEC85-D36C-4392-ADF2-5FD7307EDAAB}.Release|Win32.Build.0 = Release|Win32
+		{79DFEC85-D36C-4392-ADF2-5FD7307EDAAB}.Release|x64.ActiveCfg = Release|x64
+		{79DFEC85-D36C-4392-ADF2-5FD7307EDAAB}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
