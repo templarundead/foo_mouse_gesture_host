@@ -98,6 +98,26 @@ std::wstring arrow(const char* utf8) {
     return wide_from_utf8(utf8);
 }
 
+constexpr wchar_t kPreferencesHint[] =
+    L"1. Build a gesture using the buttons on the left.\r\n"
+    L"2. Select a command and click Add New, then Apply.\r\n"
+    L"R+L: hold RMB and click LMB.\r\n"
+    L"L+R: hold LMB and click RMB.";
+
+int measure_wrapped_text_height(HWND hwnd, HFONT font, const wchar_t* text, int width) {
+    if (hwnd == nullptr || font == nullptr || text == nullptr || width <= 0) return 0;
+    HDC dc = GetDC(hwnd);
+    if (dc == nullptr) return 0;
+
+    HGDIOBJ old_font = SelectObject(dc, font);
+    RECT bounds{0, 0, width, 0};
+    const int height = DrawTextW(dc, text, -1, &bounds,
+                                 DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+    SelectObject(dc, old_font);
+    ReleaseDC(hwnd, dc);
+    return height;
+}
+
 const wchar_t* gesture_category_title(GestureCategory category) {
     switch (category) {
     case GestureCategory::wheel_up: return L"Wheel Up";
@@ -1238,11 +1258,7 @@ void GesturePreferencesInstance::create_children() {
     }
 
     count_label_ = make_static(L"", SS_LEFT | SS_CENTERIMAGE);
-    hint_label_ = make_static(
-        L"1. Build a gesture using the buttons on the left.\r\n"
-        L"2. Select a command and click Add New, then Apply.\r\n"
-        L"R+L: hold RMB and click LMB; L+R: vice versa.",
-        SS_LEFT);
+    hint_label_ = make_static(kPreferencesHint, SS_LEFT | SS_NOPREFIX);
 
     left_label_ = make_static(L"left", SS_LEFT);
     right_label_ = make_static(L"right", SS_LEFT);
@@ -1476,13 +1492,21 @@ void GesturePreferencesInstance::layout() {
 
     // --- правая колонка: 4 строки формы + кнопки + подсказка ----------------
     const int row_step = control_height + scale(6);
-    const int hint_height = label_height * 3 + scale(4);
-    const int right_content_height = 4 * row_step + scale(8) +
-                                     button_rows * control_height + (button_rows - 1) * gap +
-                                     scale(6) + hint_height;
+    const int full_hint_width = width - 2 * margin;
+    const bool full_width_hint = form_width_early < scale(320);
+    const int hint_width = full_width_hint ? full_hint_width : form_width_early;
+    // Static и DrawText используют один шрифт и одинаковые правила переноса.
+    const int hint_height = measure_wrapped_text_height(hwnd_, font_, kPreferencesHint, hint_width) +
+                            scale(4);
+    const int right_controls_height = 4 * row_step + scale(8) +
+                                      button_rows * control_height + (button_rows - 1) * gap +
+                                      scale(6);
+    const int right_content_height = right_controls_height + (full_width_hint ? 0 : hint_height);
 
-    const int lower_height = left_content_height > right_content_height ? left_content_height
-                                                                        : right_content_height;
+    const int columns_height = left_content_height > right_content_height ? left_content_height
+                                                                          : right_content_height;
+    // На узкой странице подсказка занимает отдельную полосу под колонками.
+    const int lower_height = columns_height + (full_width_hint ? hint_height : 0);
 
     // --- подпись "Всего привязок" над крестовиной ---------------------------
     const int count_height = scale(16);
@@ -1626,8 +1650,9 @@ void GesturePreferencesInstance::layout() {
     const int buttons_bottom = buttons_y + button_rows * control_height + (button_rows - 1) * gap;
 
     if (hint_label_ != nullptr) {
-        MoveWindow(hint_label_, form_x, buttons_bottom + scale(6), form_width,
-                   hint_height, TRUE);
+        const int hint_x = full_width_hint ? margin : form_x;
+        const int hint_y = full_width_hint ? lower_top + columns_height : buttons_bottom + scale(6);
+        MoveWindow(hint_label_, hint_x, hint_y, hint_width, hint_height, TRUE);
     }
 }
 
