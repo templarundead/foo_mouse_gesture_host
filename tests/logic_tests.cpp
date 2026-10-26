@@ -2,6 +2,7 @@
 #include "command_identity.h"
 #include "gesture_config.h"
 #include "gesture_recognizer.h"
+#include "gesture_session.h"
 #include "gesture_tokens.h"
 
 #include <chrono>
@@ -474,6 +475,196 @@ void test_binding_index_differential() {
     CHECK_TRUE(!wheel_snapshot.wheel_match(mgh::kInvalidWheelSequence).prefix);
 }
 
+mgh::BindingSnapshot make_session_snapshot(const std::vector<std::string>& gestures) {
+    mgh::GestureSettings settings;
+    for (const auto& gesture : gestures) {
+        settings.bindings.emplace_back(gesture, "main", "Command/" + gesture, "main_window");
+    }
+    return mgh::BindingSnapshot(settings);
+}
+
+mgh::SessionEvent session_event(mgh::SessionEventKind kind, long x = 100, long y = 100,
+                                bool over_main = true, int wheel_delta = 0) {
+    mgh::SessionEvent event;
+    event.kind = kind;
+    event.point = { x, y };
+    event.over_main_window = over_main;
+    event.wheel_delta = wheel_delta;
+    return event;
+}
+
+void test_session_idle_drag_and_reconcile() {
+    const auto bindings = make_session_snapshot({});
+    mgh::GestureSession session;
+    CHECK_TRUE(session.state() == mgh::GestureSessionState::idle);
+
+    auto result = session.handle_event(session_event(mgh::SessionEventKind::right_down, 100, 100, false), bindings);
+    CHECK_TRUE(!result.swallow);
+    CHECK_TRUE(result.action_count == 0);
+    CHECK_TRUE(session.state() == mgh::GestureSessionState::idle);
+
+    result = session.handle_event(session_event(mgh::SessionEventKind::right_down), bindings);
+    CHECK_TRUE(result.swallow);
+    CHECK_TRUE(result.action_count == 1);
+    CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::begin);
+    CHECK_TRUE(session.state() == mgh::GestureSessionState::right_down);
+
+    result = session.handle_event(session_event(mgh::SessionEventKind::mouse_move, 102, 100), bindings);
+    CHECK_TRUE(!result.swallow);
+    CHECK_TRUE(result.action_count == 1);
+    CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::move);
+    CHECK_TRUE(!session.right_moved());
+
+    result = session.handle_event(session_event(mgh::SessionEventKind::right_up, 102, 100), bindings);
+    CHECK_TRUE(result.swallow);
+    CHECK_TRUE(result.action_count == 1);
+    CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::finish);
+    CHECK_TRUE(result.actions[0].was_tap);
+    CHECK_TRUE(result.actions[0].was_suppressed);
+    CHECK_TRUE(result.actions[0].right_down_point.x == 100);
+    CHECK_TRUE(session.state() == mgh::GestureSessionState::idle);
+
+    session.handle_event(session_event(mgh::SessionEventKind::right_down), bindings);
+    session.handle_event(session_event(mgh::SessionEventKind::mouse_move, 140, 100), bindings);
+    CHECK_TRUE(session.right_moved());
+    result = session.handle_event(session_event(mgh::SessionEventKind::right_up, 140, 100), bindings);
+    CHECK_TRUE(!result.actions[0].was_tap);
+
+    session.handle_event(session_event(mgh::SessionEventKind::right_down), bindings);
+    result = session.reconcile_buttons(false, false, bindings);
+    CHECK_TRUE(result.action_count == 1);
+    CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::finish);
+    CHECK_TRUE(session.state() == mgh::GestureSessionState::idle);
+}
+
+void test_session_rocker() {
+    const auto bindings = make_session_snapshot({ "R+L", "L+R" });
+    mgh::GestureSession session;
+    session.handle_event(session_event(mgh::SessionEventKind::right_down), bindings);
+    auto result = session.handle_event(session_event(mgh::SessionEventKind::left_down, 110, 100), bindings);
+    CHECK_TRUE(result.swallow);
+    CHECK_TRUE(session.state() == mgh::GestureSessionState::rocker_right_left);
+    result = session.handle_event(session_event(mgh::SessionEventKind::left_up, 110, 100), bindings);
+    CHECK_TRUE(result.swallow);
+    CHECK_TRUE(result.action_count == 1);
+    CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::emit_rocker);
+    CHECK_TRUE(result.actions[0].rocker_token == mgh::Token::rocker_right_left);
+    result = session.handle_event(session_event(mgh::SessionEventKind::right_up), bindings);
+    CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::finish);
+
+    session.reset();
+    result = session.handle_event(session_event(mgh::SessionEventKind::left_down), bindings);
+    CHECK_TRUE(!result.swallow);
+    result = session.handle_event(session_event(mgh::SessionEventKind::right_down), bindings);
+    CHECK_TRUE(result.swallow);
+    CHECK_TRUE(result.action_count == 0);
+    CHECK_TRUE(session.state() == mgh::GestureSessionState::rocker_left_right);
+    result = session.handle_event(session_event(mgh::SessionEventKind::right_up), bindings);
+    CHECK_TRUE(result.swallow);
+    CHECK_TRUE(result.action_count == 1);
+    CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::emit_rocker);
+    CHECK_TRUE(result.actions[0].rocker_token == mgh::Token::rocker_left_right);
+    result = session.handle_event(session_event(mgh::SessionEventKind::left_up), bindings);
+    CHECK_TRUE(!result.swallow);
+}
+
+void test_session_wheel_and_fractional_delta() {
+    const auto bindings = make_session_snapshot({ "WU", "WD" });
+    mgh::GestureSession session;
+    session.handle_event(session_event(mgh::SessionEventKind::right_down), bindings);
+    CHECK_TRUE(session.handle_event(session_event(mgh::SessionEventKind::wheel, 100, 100, true, 30), bindings).action_count == 0);
+    CHECK_TRUE(session.wheel_accumulator() == 30);
+    CHECK_TRUE(session.handle_event(session_event(mgh::SessionEventKind::wheel, 100, 100, true, 30), bindings).action_count == 0);
+    CHECK_TRUE(session.wheel_accumulator() == 60);
+    auto result = session.handle_event(session_event(mgh::SessionEventKind::wheel, 100, 100, true, 60), bindings);
+    CHECK_TRUE(result.swallow);
+    CHECK_TRUE(result.action_count == 1);
+    CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::emit_wheel);
+    CHECK_TRUE(mgh::wheel_sequence_length(result.actions[0].wheel_sequence) == 1);
+    CHECK_TRUE(session.wheel_accumulator() == 0);
+    CHECK_TRUE(session.state() == mgh::GestureSessionState::wheel);
+
+    result = session.handle_event(session_event(mgh::SessionEventKind::wheel, 100, 100, true, 1200), bindings);
+    CHECK_TRUE(result.swallow);
+    CHECK_TRUE(result.action_count == 4);
+    CHECK_TRUE(session.wheel_accumulator() == 0);
+    result = session.handle_event(session_event(mgh::SessionEventKind::right_up), bindings);
+    CHECK_TRUE(result.actions[0].wheel_used);
+
+    const auto sequence_bindings = make_session_snapshot({ "WU WU" });
+    session.reset();
+    session.handle_event(session_event(mgh::SessionEventKind::right_down), sequence_bindings);
+    result = session.handle_event(session_event(mgh::SessionEventKind::wheel, 100, 100, true, 120), sequence_bindings);
+    CHECK_TRUE(result.swallow);
+    CHECK_TRUE(result.action_count == 0);
+    result = session.handle_event(session_event(mgh::SessionEventKind::wheel, 100, 100, true, 120), sequence_bindings);
+    CHECK_TRUE(result.swallow);
+    CHECK_TRUE(result.action_count == 1);
+    CHECK_TRUE(mgh::wheel_sequence_length(result.actions[0].wheel_sequence) == 2);
+    session.reset();
+    session.handle_event(session_event(mgh::SessionEventKind::right_down), sequence_bindings);
+    session.handle_event(session_event(mgh::SessionEventKind::wheel, 100, 100, true, 120), sequence_bindings);
+    result = session.handle_event(session_event(mgh::SessionEventKind::wheel, 100, 100, true, -120), sequence_bindings);
+    CHECK_TRUE(!result.swallow);
+    CHECK_TRUE(result.action_count == 1);
+    CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::unmatched_wheel);
+}
+
+void test_bounded_mouse_queue() {
+    mgh::BoundedMouseQueue<2> queue;
+    mgh::QueuedMouseEvent move;
+    move.droppable = true;
+    move.result.action_count = 1;
+    move.result.actions[0].kind = mgh::SessionActionKind::move;
+    mgh::QueuedMouseEvent critical;
+    critical.result.action_count = 1;
+    critical.result.actions[0].kind = mgh::SessionActionKind::begin;
+
+    CHECK_TRUE(queue.push(move));
+    move.result.actions[0].point.x = 2;
+    CHECK_TRUE(queue.push(move));
+    CHECK_TRUE(queue.push(critical));
+    CHECK_TRUE(queue.dropped() == 1);
+    CHECK_TRUE(queue.size() == 2);
+
+    mgh::QueuedMouseEvent out;
+    CHECK_TRUE(queue.pop(out));
+    CHECK_TRUE(out.droppable);
+    CHECK_TRUE(out.result.actions[0].point.x == 2);
+    CHECK_TRUE(queue.push(critical));
+    CHECK_TRUE(queue.dropped() == 1);
+    CHECK_TRUE(!queue.push(critical));
+    CHECK_TRUE(queue.dropped() == 2);
+    CHECK_TRUE(!queue.push(move));
+    CHECK_TRUE(queue.dropped() == 3);
+    CHECK_TRUE(queue.pop(out));
+    CHECK_TRUE(out.result.actions[0].kind == mgh::SessionActionKind::begin);
+}
+
+void test_hook_health_fake_clock() {
+    mgh::HookHealth health;
+    health.note_event(1000);
+    CHECK_TRUE(!health.should_reinstall(3999, true));
+    CHECK_TRUE(!health.should_reinstall(5000, false));
+    CHECK_TRUE(health.should_reinstall(4000, true));
+
+    health.note_reinstall(4000, true);
+    CHECK_TRUE(health.reinstall_attempts() == 1);
+    CHECK_TRUE(!health.should_reinstall(7000, true));
+    CHECK_TRUE(health.should_reinstall(8000, true));
+    health.note_event(8000);
+    CHECK_TRUE(health.reinstall_attempts() == 0);
+
+    CHECK_TRUE(health.should_reinstall(11000, true));
+    health.note_reinstall(11000, false);
+    CHECK_TRUE(!health.should_reinstall(11999, true));
+    CHECK_TRUE(health.should_reinstall(12000, true));
+    health.note_reinstall(12000, false);
+    CHECK_TRUE(health.backoff_ms() == 2000);
+    CHECK_TRUE(!health.should_reinstall(13999, true));
+    CHECK_TRUE(health.should_reinstall(14000, true));
+}
+
 std::size_t benchmark_sink = 0;
 
 void run_binding_benchmark() {
@@ -524,13 +715,18 @@ int main(int argc, char** argv) {
     test_config_corruption_and_duplicates();
     test_command_identity_resolution();
     test_binding_index_differential();
+    test_session_idle_drag_and_reconcile();
+    test_session_rocker();
+    test_session_wheel_and_fractional_delta();
+    test_bounded_mouse_queue();
+    test_hook_health_fake_clock();
 
     if (failures != 0) {
         std::cerr << failures << " logic test assertion(s) failed\n";
         return 1;
     }
     std::cout << "Logic tests passed: 12 tokens, candidate order, "
-              << trajectory_checks << " deterministic trajectories, config and binding index\n";
+              << trajectory_checks << " deterministic trajectories, config, index, session and health\n";
     if (argc == 2 && std::string_view(argv[1]) == "--benchmark") {
         run_binding_benchmark();
     } else if (argc != 1) {

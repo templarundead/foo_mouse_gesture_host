@@ -117,6 +117,7 @@
     <ClCompile Include="src\gesture_config_serialization.cpp" />
     <ClCompile Include="src\gesture_engine.cpp" />
     <ClCompile Include="src\gesture_recognizer.cpp" />
+    <ClCompile Include="src\gesture_session.cpp" />
     <ClCompile Include="src\gesture_tokens.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\preferences_page.cpp" />
@@ -130,6 +131,7 @@
     <ClInclude Include="src\gesture_config.h" />
     <ClInclude Include="src\gesture_engine.h" />
     <ClInclude Include="src\gesture_recognizer.h" />
+    <ClInclude Include="src\gesture_session.h" />
     <ClInclude Include="src\gesture_tokens.h" />
     <ClInclude Include="src\logic_common.h" />
     <ClInclude Include="src\preferences_page.h" />
