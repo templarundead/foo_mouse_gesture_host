@@ -1030,15 +1030,8 @@ GesturePreferencesInstance::GesturePreferencesInstance(HWND parent,
     create_children();
     apply_theme();
 
-    if (settings_.bindings.empty()) {
-        // Страховка: страница не должна открываться с пустой таблицей -
-        // без строк нельзя ни выбрать привязку, ни понять, что происходит.
-        settings_ = GestureConfig::defaults();
-        // Хосту сообщим о несохранённых изменениях при первом показе страницы:
-        // дёргать callback из конструктора нельзя.
-        dirty_ = true;
-        pending_state_notify_ = true;
-    }
+    // Пустая таблица после Apply - осознанная настройка, а не первый запуск.
+    // Defaults восстанавливаются явной кнопкой Reset или самим хранилищем при первом запуске.
     load_from_settings();
 
     layout();

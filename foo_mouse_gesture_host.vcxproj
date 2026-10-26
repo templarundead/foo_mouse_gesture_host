@@ -113,6 +113,7 @@
   <ItemGroup>
     <ClCompile Include="src\command_catalog.cpp" />
     <ClCompile Include="src\gesture_config.cpp" />
+    <ClCompile Include="src\gesture_config_serialization.cpp" />
     <ClCompile Include="src\gesture_engine.cpp" />
     <ClCompile Include="src\gesture_recognizer.cpp" />
     <ClCompile Include="src\gesture_tokens.cpp" />

@@ -85,10 +85,12 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="logic_tests.cpp" />
+    <ClCompile Include="..\src\gesture_config_serialization.cpp" />
     <ClCompile Include="..\src\gesture_recognizer.cpp" />
     <ClCompile Include="..\src\gesture_tokens.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\src\gesture_config.h" />
     <ClInclude Include="..\src\gesture_recognizer.h" />
     <ClInclude Include="..\src\gesture_tokens.h" />
     <ClInclude Include="..\src\logic_common.h" />

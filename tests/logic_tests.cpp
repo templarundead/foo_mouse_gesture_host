@@ -1,3 +1,4 @@
+#include "gesture_config.h"
 #include "gesture_recognizer.h"
 #include "gesture_tokens.h"
 
@@ -217,12 +218,112 @@ void test_recognizer_trajectories() {
     CHECK_TRUE(trajectory_checks >= 100);
 }
 
+void test_config_roundtrip_and_migration() {
+    using mgh::GestureBinding;
+
+    const std::vector<GestureBinding> source = {
+        { "U R", "main", "Playback/Next", "main_window",
+          "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "", "0.4.2" },
+        { "WU WU", "context_ui", "Utilities/\xE5\x88\x86\xE4\xBA\xAB \\ \t\n",
+          "playlist", "11111111-2222-3333-4444-555555555555",
+          "66666666-7777-8888-9999-aaaaaaaaaaaa", "1.0.3" },
+        { "R+L", "context_now_playing", "Now Playing \xE2\x9C\x93", "now_playing", "", "", "2" },
+    };
+    const std::string serialized = mgh::GestureConfig::serialize(source);
+    CHECK_TRUE(serialized.rfind("MGH2\n", 0) == 0);
+    const auto parsed = mgh::GestureConfig::deserialize(serialized);
+    CHECK_TRUE(parsed.valid);
+    CHECK_TRUE(parsed.schema == mgh::BindingSchema::schema_v2);
+    CHECK_TRUE(parsed.dropped_rows == 0);
+    CHECK_TRUE(parsed.duplicate_rows == 0);
+    CHECK_TRUE(parsed.bindings == source);
+    CHECK_TRUE(mgh::GestureConfig::serialize(parsed.bindings) == serialized);
+
+    const auto empty_v2 = mgh::GestureConfig::deserialize(mgh::GestureConfig::serialize({}));
+    CHECK_TRUE(empty_v2.valid);
+    CHECK_TRUE(empty_v2.schema == mgh::BindingSchema::schema_v2);
+    CHECK_TRUE(empty_v2.bindings.empty());
+    const auto empty_legacy = mgh::GestureConfig::deserialize("");
+    CHECK_TRUE(empty_legacy.valid);
+    CHECK_TRUE(empty_legacy.schema == mgh::BindingSchema::empty);
+    CHECK_TRUE(empty_legacy.bindings.empty());
+
+    const std::string legacy_text =
+        "L\tmain\tPlayback/Previous\tmain_window\n"
+        "U\tcontext_ui\tUtilities/\xE5\x88\x86\xE4\xBA\xAB\tplaylist\n";
+    const auto legacy = mgh::GestureConfig::deserialize(legacy_text);
+    CHECK_TRUE(legacy.valid);
+    CHECK_TRUE(legacy.schema == mgh::BindingSchema::legacy_v1);
+    CHECK_TRUE(legacy.bindings.size() == 2);
+    CHECK_TRUE(legacy.bindings[0].command_path == "Playback/Previous");
+    CHECK_TRUE(legacy.bindings[1].command_path == "Utilities/\xE5\x88\x86\xE4\xBA\xAB");
+    CHECK_TRUE(legacy.bindings[0].command_guid.empty());
+    CHECK_TRUE(legacy.bindings[0].node_path.empty());
+    const auto migrated = mgh::GestureConfig::deserialize(mgh::GestureConfig::serialize(legacy.bindings));
+    CHECK_TRUE(migrated.valid);
+    CHECK_TRUE(migrated.schema == mgh::BindingSchema::schema_v2);
+    CHECK_TRUE(migrated.bindings == legacy.bindings);
+
+    const auto defaults = mgh::GestureConfig::defaults();
+    const std::vector<GestureBinding> expected_defaults = {
+        { "L", "main", "Playback/Previous", "main_window" },
+        { "R", "main", "Playback/Next", "main_window" },
+        { "U", "main", "Playback/Volume up", "main_window" },
+        { "D", "main", "Playback/Volume down", "main_window" },
+    };
+    CHECK_TRUE(defaults.bindings == expected_defaults);
+}
+
+void test_config_corruption_and_duplicates() {
+    const std::string valid_row = "U\tmain\tPlayback/Play\tmain_window\t\t\t\n";
+    const std::string valid_guid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    std::string corrupt = "MGH2\n" + valid_row;
+    corrupt += "D\tmain\tOnly three fields\n";
+    corrupt += "WHAT\tmain\tPlayback/Next\tmain_window\t\t\t\n";
+    corrupt += "D\tunknown\tPlayback/Next\tmain_window\t\t\t\n";
+    corrupt += "D\tmain\tPlayback/Next\tunknown\t\t\t\n";
+    corrupt += "D\tmain\tBad\\qEscape\tmain_window\t\t\t\n";
+    corrupt += "D\tmain\tPlayback/Next\tmain_window\tnot-a-guid\t\t\n";
+    corrupt += "D\tmain\tPlayback/Next\tmain_window\t\t" + valid_guid + "\t\n";
+    corrupt += "D\tmain\tPlayback/Next\tmain_window\t\t\t0..2\n";
+    corrupt += std::string("D\tmain\t") + "\xF0\x28\x8C\x28" + "\tmain_window\t\t\t\n";
+
+    const auto parsed = mgh::GestureConfig::deserialize(corrupt);
+    CHECK_TRUE(!parsed.valid);
+    CHECK_TRUE(parsed.dropped_rows == 9);
+    CHECK_TRUE(parsed.bindings.size() == 1);
+    CHECK_TRUE(parsed.bindings.front().command_path == "Playback/Play");
+    CHECK_TRUE(parsed.diagnostics.size() == 9);
+
+    const auto unknown = mgh::GestureConfig::deserialize("MGH99\nU\tmain\tX\tmain_window\n");
+    CHECK_TRUE(!unknown.valid);
+    CHECK_TRUE(unknown.schema == mgh::BindingSchema::unknown);
+    CHECK_TRUE(unknown.bindings.empty());
+
+    const std::string duplicates = "MGH2\n" + valid_row + valid_row +
+        "U\tmain\tPlayback/Pause\tmain_window\t\t\t\n";
+    const auto deduplicated = mgh::GestureConfig::deserialize(duplicates);
+    CHECK_TRUE(deduplicated.valid);
+    CHECK_TRUE(deduplicated.duplicate_rows == 1);
+    CHECK_TRUE(deduplicated.dropped_rows == 0);
+    CHECK_TRUE(deduplicated.bindings.size() == 2);
+    CHECK_TRUE(deduplicated.bindings[0].command_path == "Playback/Play");
+    CHECK_TRUE(deduplicated.bindings[1].command_path == "Playback/Pause");
+
+    CHECK_TRUE(mgh::group_id_from_label("not a group").empty());
+    CHECK_TRUE(mgh::place_id_from_label("not a place").empty());
+    CHECK_TRUE(std::string(mgh::group_label("not a group")) == "unknown group");
+    CHECK_TRUE(std::string(mgh::place_label("not a place")) == "unknown place");
+}
+
 } // namespace
 
 int main() {
     test_tokens();
     test_candidate_order();
     test_recognizer_trajectories();
+    test_config_roundtrip_and_migration();
+    test_config_corruption_and_duplicates();
 
     if (failures != 0) {
         std::cerr << failures << " logic test assertion(s) failed\n";
