@@ -2,57 +2,91 @@
 
 #include "command_catalog.h"
 
+#include <process.h>
+
 namespace mgh {
 namespace {
 
 constexpr wchar_t kSinkClass[] = L"foo_mouse_gesture_host_sink";
-constexpr UINT kMsgExecuteGesture = WM_APP + 0x4D47; // 'MG'
+constexpr UINT kMsgExecuteGesture = WM_APP + 0x47;
+constexpr UINT kMsgProcessMouse = WM_APP + 0x48;
+constexpr UINT kMsgReload = WM_APP + 0x49;
+constexpr UINT kMsgShutdown = WM_APP + 0x4A;
+constexpr UINT_PTR kHealthTimer = 1;
+constexpr UINT kHealthTimerMs = 1000;
+constexpr std::size_t kMaxPendingCommands = 64;
+constexpr std::size_t kMaxPendingLogs = 32;
+constexpr ULONG_PTR kOwnMouseMarker = static_cast<ULONG_PTR>(0x4D474853); // 'MGHS'
 
-bool over_main_window(POINT pt) {
-    const HWND main_window = core_api::get_main_window();
+struct ReloadMessage {
+    BindingSnapshotPtr snapshot;
+};
+
+bool over_main_window(HWND main_window, POINT pt) {
     if (main_window == nullptr) return false;
-
     const HWND window = WindowFromPoint(pt);
     if (window == nullptr) return false;
-
     return GetAncestor(window, GA_ROOT) == main_window;
 }
 
-void register_sink_class() {
+void register_sink_class(HINSTANCE instance) {
     static bool registered = false;
     if (registered) return;
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = &GestureEngine::sink_proc;
-    wc.hInstance = core_api::get_my_instance();
+    wc.hInstance = instance;
     wc.lpszClassName = kSinkClass;
     RegisterClassExW(&wc);
-
     registered = true;
 }
 
-//! Сдвиг в пикселях, после которого считаем, что пользователь начал драг.
-constexpr int kDragThreshold = 3;
-
-} // namespace
-
-void GestureEngine::replay_right_click() {
-    // Синтетические события помечаются LLMHF_INJECTED и игнорируются хуком,
-    // поэтому рекурсии нет, а foobar2000 получает обычный правый клик.
-    INPUT inputs[2] = {};
-    inputs[0].type = INPUT_MOUSE;
-    inputs[0].mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
-    inputs[1].type = INPUT_MOUSE;
-    inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
-
-    replay_guard_ = GetTickCount64();
-
-    if (SendInput(2, inputs, sizeof(INPUT)) != 2) {
-        FB2K_console_formatter() << "Mouse Gesture Host: failed to replay the right click ("
-                                 << static_cast<unsigned long>(GetLastError()) << ")";
+bool make_session_event(WPARAM msg, const MSLLHOOKSTRUCT& info, HWND main_window,
+                        SessionEvent& event) {
+    event.point = { info.pt.x, info.pt.y };
+    switch (msg) {
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONDBLCLK:
+        event.kind = SessionEventKind::right_down;
+        event.over_main_window = over_main_window(main_window, info.pt);
+        return true;
+    case WM_LBUTTONDOWN:
+        event.kind = SessionEventKind::left_down;
+        event.over_main_window = over_main_window(main_window, info.pt);
+        return true;
+    case WM_LBUTTONUP:
+        event.kind = SessionEventKind::left_up;
+        return true;
+    case WM_RBUTTONUP:
+        event.kind = SessionEventKind::right_up;
+        return true;
+    case WM_MOUSEMOVE:
+        event.kind = SessionEventKind::mouse_move;
+        return true;
+    case WM_MOUSEWHEEL:
+        event.kind = SessionEventKind::wheel;
+        event.wheel_delta = static_cast<short>(HIWORD(info.mouseData));
+        event.over_main_window = over_main_window(main_window, info.pt);
+        return true;
+    default:
+        return false;
     }
 }
+
+std::string wheel_sequence_gesture(WheelSequenceKey key) {
+    const std::size_t length = wheel_sequence_length(key);
+    if (key == kInvalidWheelSequence || length == 0 || length > 32) return {};
+    std::vector<Token> tokens;
+    tokens.reserve(length);
+    for (std::size_t i = 0; i < length; ++i) {
+        const bool down = (static_cast<std::uint32_t>(key) & (std::uint32_t{1} << i)) != 0;
+        tokens.push_back(down ? Token::wheel_down : Token::wheel_up);
+    }
+    return join_tokens(tokens);
+}
+
+} // namespace
 
 GestureEngine& GestureEngine::instance() {
     static GestureEngine engine;
@@ -60,354 +94,506 @@ GestureEngine& GestureEngine::instance() {
 }
 
 void GestureEngine::install() {
-    if (hook_ != nullptr) return;
+    if (thread_ != nullptr) return;
 
-    reload();
+    snapshot_ = std::make_shared<BindingSnapshot>(GestureConfig::instance().load_from_storage());
+    worker_snapshot_ = snapshot_;
+    instance_ = core_api::get_my_instance();
+    main_window_ = core_api::get_main_window();
+    register_sink_class(instance_);
 
-    register_sink_class();
-    if (sink_ == nullptr) {
-        sink_ = CreateWindowExW(0, kSinkClass, L"", 0, 0, 0, 0, 0,
-                                HWND_MESSAGE, nullptr, core_api::get_my_instance(), nullptr);
+    main_sink_ = CreateWindowExW(0, kSinkClass, L"", 0, 0, 0, 0, 0,
+                                 HWND_MESSAGE, nullptr, instance_, nullptr);
+    if (main_sink_ == nullptr) {
+        FB2K_console_formatter() << "Mouse Gesture Host: failed to create the main-thread sink ("
+                                 << static_cast<unsigned long>(GetLastError()) << ")";
+        return;
     }
 
-    hook_ = SetWindowsHookExW(WH_MOUSE_LL, &GestureEngine::mouse_hook_proc,
-                              core_api::get_my_instance(), 0);
-    if (hook_ == nullptr) {
-        FB2K_console_formatter() << "Mouse Gesture Host: failed to install the mouse hook ("
+    ready_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (ready_event_ == nullptr) {
+        FB2K_console_formatter() << "Mouse Gesture Host: failed to create the hook startup event ("
                                  << static_cast<unsigned long>(GetLastError()) << ")";
+        DestroyWindow(main_sink_);
+        main_sink_ = nullptr;
+        return;
+    }
+
+    worker_error_ = 0;
+    worker_ready_ = false;
+    const uintptr_t handle = _beginthreadex(nullptr, 0, &GestureEngine::thread_proc, this, 0, nullptr);
+    if (handle == 0) {
+        FB2K_console_formatter() << "Mouse Gesture Host: failed to start the mouse-hook thread ("
+                                 << static_cast<unsigned long>(GetLastError()) << ")";
+        CloseHandle(ready_event_);
+        ready_event_ = nullptr;
+        DestroyWindow(main_sink_);
+        main_sink_ = nullptr;
+        return;
+    }
+    thread_ = reinterpret_cast<HANDLE>(handle);
+
+    WaitForSingleObject(ready_event_, INFINITE);
+    CloseHandle(ready_event_);
+    ready_event_ = nullptr;
+
+    if (!worker_ready_) {
+        WaitForSingleObject(thread_, INFINITE);
+        CloseHandle(thread_);
+        thread_ = nullptr;
+        DestroyWindow(main_sink_);
+        main_sink_ = nullptr;
+        FB2K_console_formatter() << "Mouse Gesture Host: mouse-hook thread initialization failed ("
+                                 << static_cast<unsigned long>(worker_error_) << ")";
     }
 }
 
 void GestureEngine::uninstall() {
+    if (thread_ != nullptr) {
+        if (worker_sink_ != nullptr) {
+            if (!PostMessageW(worker_sink_, kMsgShutdown, 0, 0)) {
+                PostThreadMessageW(worker_thread_id_, WM_QUIT, 0, 0);
+            }
+        } else {
+            PostThreadMessageW(worker_thread_id_, WM_QUIT, 0, 0);
+        }
+        WaitForSingleObject(thread_, INFINITE);
+        CloseHandle(thread_);
+        thread_ = nullptr;
+    }
+    if (main_sink_ != nullptr) {
+        DestroyWindow(main_sink_);
+        main_sink_ = nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(main_queue_mutex_);
+    pending_commands_.clear();
+    pending_logs_.clear();
+    main_queue_posted_ = false;
+    dropped_commands_ = 0;
+    dropped_logs_ = 0;
+}
+
+void GestureEngine::reload() {
+    BindingSnapshotPtr snapshot = std::make_shared<BindingSnapshot>(
+        GestureConfig::instance().load_from_storage());
+    snapshot_ = snapshot;
+
+    if (thread_ == nullptr || worker_sink_ == nullptr) return;
+    auto* message = new ReloadMessage{ std::move(snapshot) };
+    if (!PostMessageW(worker_sink_, kMsgReload, 0, reinterpret_cast<LPARAM>(message))) {
+        delete message;
+        FB2K_console_formatter() << "Mouse Gesture Host: failed to post configuration to the hook thread ("
+                                 << static_cast<unsigned long>(GetLastError()) << ")";
+    }
+}
+
+unsigned __stdcall GestureEngine::thread_proc(void* argument) {
+    static_cast<GestureEngine*>(argument)->run_worker();
+    return 0;
+}
+
+void GestureEngine::run_worker() {
+    worker_thread_id_ = GetCurrentThreadId();
+    worker_ready_ = initialize_worker();
+    SetEvent(ready_event_);
+    if (!worker_ready_) {
+        cleanup_worker();
+        return;
+    }
+
+    MSG message = {};
+    BOOL result = 0;
+    while ((result = GetMessageW(&message, nullptr, 0, 0)) > 0) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    if (result < 0) {
+        post_log("Mouse Gesture Host: hook message loop failed (" +
+                 std::to_string(static_cast<unsigned long>(GetLastError())) + ")");
+    }
+    cleanup_worker();
+}
+
+bool GestureEngine::initialize_worker() {
+    worker_sink_ = CreateWindowExW(0, kSinkClass, L"", 0, 0, 0, 0, 0,
+                                   HWND_MESSAGE, nullptr, instance_, nullptr);
+    if (worker_sink_ == nullptr) {
+        worker_error_ = GetLastError();
+        return false;
+    }
+
+    hook_ = SetWindowsHookExW(WH_MOUSE_LL, &GestureEngine::mouse_hook_proc, instance_, 0);
+    if (hook_ == nullptr) {
+        worker_error_ = GetLastError();
+        return false;
+    }
+
+    recognizer_.set_stroke_length(worker_snapshot_->settings().stroke_length);
+    if (SetTimer(worker_sink_, kHealthTimer, kHealthTimerMs, nullptr) == 0) {
+        worker_error_ = GetLastError();
+        return false;
+    }
+
+    GetCursorPos(&last_cursor_pos_);
+    last_left_down_ = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    last_right_down_ = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+    health_.note_event(GetTickCount64());
+    return true;
+}
+
+void GestureEngine::cleanup_worker() {
     if (hook_ != nullptr) {
         UnhookWindowsHookEx(hook_);
         hook_ = nullptr;
     }
-    if (sink_ != nullptr) {
-        DestroyWindow(sink_);
-        sink_ = nullptr;
+    if (worker_sink_ != nullptr) {
+        KillTimer(worker_sink_, kHealthTimer);
+        DestroyWindow(worker_sink_);
+        worker_sink_ = nullptr;
     }
-    pending_.clear();
-    replay_pending_ = false;
-    reset_session();
-}
-
-void GestureEngine::reload() {
-    snapshot_ = std::make_shared<BindingSnapshot>(GestureConfig::instance().load_from_storage());
-    recognizer_.set_stroke_length(snapshot_->settings().stroke_length);
-}
-
-void GestureEngine::reset_session() {
-    suppress_right_ = false;
-    right_moved_ = false;
-    right_down_ = false;
-    left_down_ = false;
-    session_from_right_ = true;
-    rocker_armed_ = false;
-    wheel_used_ = false;
-    wheel_sequence_.clear();
-    wheel_accum_ = 0;
+    mouse_queue_.clear();
+    mouse_process_posted_ = false;
+    session_.reset();
     recognizer_.cancel();
-}
-
-bool GestureEngine::has_binding(const std::string& gesture) const {
-    return snapshot_->has_binding(gesture);
-}
-
-bool GestureEngine::has_binding_prefix(const std::string& gesture) const {
-    return snapshot_->has_binding_prefix(gesture);
+    reported_gestures_.clear();
 }
 
 void GestureEngine::queue_gesture(const std::string& gesture) {
-    if (sink_ == nullptr) return;
-    pending_.push_back(gesture);
-    PostMessageW(sink_, kMsgExecuteGesture, 0, 0);
-}
-
-void GestureEngine::request_right_click_replay() {
-    replay_pending_ = true;
-    if (sink_ != nullptr) {
-        PostMessageW(sink_, kMsgExecuteGesture, 0, 0);
-    } else {
-        // Окно-приёмник ещё не создано - отправляем напрямую: лучше так,
-        // чем потерять клик совсем.
-        replay_pending_ = false;
-        replay_right_click();
+    bool post = false;
+    {
+        std::lock_guard<std::mutex> lock(main_queue_mutex_);
+        if (pending_commands_.size() >= kMaxPendingCommands) {
+            ++dropped_commands_;
+        } else {
+            pending_commands_.push_back({ gesture, worker_snapshot_ });
+        }
+        if (!main_queue_posted_) {
+            main_queue_posted_ = true;
+            post = true;
+        }
+    }
+    if (post && main_sink_ != nullptr && !PostMessageW(main_sink_, kMsgExecuteGesture, 0, 0)) {
+        std::lock_guard<std::mutex> lock(main_queue_mutex_);
+        main_queue_posted_ = false;
     }
 }
 
-bool GestureEngine::handle_wheel_notch(bool up) {
-    const std::string token = token_id(up ? Token::wheel_up : Token::wheel_down);
-    const std::string next = wheel_sequence_.empty() ? token : wheel_sequence_ + " " + token;
+void GestureEngine::post_log(const std::string& message) {
+    bool post = false;
+    {
+        std::lock_guard<std::mutex> lock(main_queue_mutex_);
+        if (pending_logs_.size() >= kMaxPendingLogs) {
+            ++dropped_logs_;
+        } else {
+            pending_logs_.push_back(message);
+        }
+        if (!main_queue_posted_) {
+            main_queue_posted_ = true;
+            post = true;
+        }
+    }
+    if (post && main_sink_ != nullptr && !PostMessageW(main_sink_, kMsgExecuteGesture, 0, 0)) {
+        std::lock_guard<std::mutex> lock(main_queue_mutex_);
+        main_queue_posted_ = false;
+    }
+}
 
-    // Точное совпадение - исполняем и начинаем последовательность заново.
-    if (has_binding(next)) {
-        wheel_used_ = true;
-        wheel_sequence_.clear();
-        queue_gesture(next);
-        return true;
+void GestureEngine::drain_main_queue() {
+    for (;;) {
+        GestureCommandRequest command;
+        std::string log;
+        bool have_command = false;
+        bool have_log = false;
+        std::uint64_t dropped_commands = 0;
+        std::uint64_t dropped_logs = 0;
+        {
+            std::lock_guard<std::mutex> lock(main_queue_mutex_);
+            if (!pending_commands_.empty()) {
+                command = std::move(pending_commands_.front());
+                pending_commands_.pop_front();
+                have_command = true;
+            } else if (!pending_logs_.empty()) {
+                log = std::move(pending_logs_.front());
+                pending_logs_.pop_front();
+                have_log = true;
+            } else {
+                dropped_commands = dropped_commands_;
+                dropped_logs = dropped_logs_;
+                dropped_commands_ = 0;
+                dropped_logs_ = 0;
+                main_queue_posted_ = false;
+            }
+        }
+
+        if (have_log) {
+            FB2K_console_formatter() << log.c_str();
+            continue;
+        }
+        if (have_command) {
+            const BindingSnapshotPtr snapshot = command.snapshot;
+            const auto matches = snapshot->exact_matches(command.gesture);
+            for (std::size_t i = 0; i < matches.size(); ++i) {
+                if (i > 0 && snapshot->settings().first_only) break;
+                const GestureBinding& binding = snapshot->settings().bindings[matches[i]];
+                std::string diagnostic;
+                if (!execute_binding(binding, &diagnostic)) {
+                    FB2K_console_formatter()
+                        << "Mouse Gesture Host: gesture \"" << command.gesture.c_str()
+                        << "\" matched, but command \"" << binding.command_path.c_str()
+                        << "\" was not executed: " << diagnostic.c_str();
+                }
+            }
+            continue;
+        }
+
+        if (dropped_commands != 0) {
+            FB2K_console_formatter() << "Mouse Gesture Host: dropped "
+                                     << static_cast<t_size>(dropped_commands)
+                                     << " queued gesture(s) because the main-thread queue was full";
+        }
+        if (dropped_logs != 0) {
+            FB2K_console_formatter() << "Mouse Gesture Host: dropped "
+                                     << static_cast<t_size>(dropped_logs) << " queued log message(s)";
+        }
+        break;
+    }
+}
+
+void GestureEngine::process_mouse_queue() {
+    QueuedMouseEvent event;
+    while (mouse_queue_.pop(event)) {
+        for (std::size_t i = 0; i < event.result.action_count; ++i) {
+            process_action(event.result.actions[i]);
+        }
+    }
+    if (reported_mouse_drops_ != mouse_queue_.dropped()) {
+        const std::uint64_t delta = mouse_queue_.dropped() - reported_mouse_drops_;
+        reported_mouse_drops_ = mouse_queue_.dropped();
+        post_log("Mouse Gesture Host: dropped " + std::to_string(delta) +
+                 " low-level mouse event(s); total " + std::to_string(reported_mouse_drops_));
+    }
+    mouse_process_posted_ = false;
+}
+
+void GestureEngine::process_action(const SessionAction& action) {
+    switch (action.kind) {
+    case SessionActionKind::begin:
+        recognizer_.set_stroke_length(worker_snapshot_->settings().stroke_length);
+        recognizer_.begin(action.point.x, action.point.y);
+        return;
+    case SessionActionKind::move:
+        recognizer_.move(action.point.x, action.point.y);
+        return;
+    case SessionActionKind::emit_rocker:
+        queue_gesture(token_id(action.rocker_token));
+        return;
+    case SessionActionKind::emit_wheel:
+        queue_gesture(wheel_sequence_gesture(action.wheel_sequence));
+        return;
+    case SessionActionKind::unmatched_wheel:
+        report_unmatched_gesture(wheel_sequence_gesture(action.wheel_sequence));
+        return;
+    case SessionActionKind::finish:
+        break;
     }
 
-    // Есть более длинный жест с таким префиксом - копим дальше.
-    if (has_binding_prefix(next)) {
-        wheel_used_ = true;
-        wheel_sequence_ = next;
-        return true;
-    }
+    recognizer_.finish();
+    const std::string gesture = recognizer_.canonical();
+    const auto match_candidates = recognizer_.match_candidates();
+    recognizer_.cancel();
 
-    // Накопленная последовательность не подошла. Пробуем начать заново
-    // с этого щелчка, иначе один лишний щелчок "залипал" и все следующие
-    // жесты колесом не срабатывали.
-    wheel_sequence_.clear();
-    if (has_binding(token)) {
-        wheel_used_ = true;
-        queue_gesture(token);
-        return true;
+    bool executed = false;
+    for (const auto& candidate : match_candidates) {
+        if (!candidate.empty() && worker_snapshot_->has_binding(candidate)) {
+            queue_gesture(candidate);
+            executed = true;
+            break;
+        }
     }
+    if (!executed && !gesture.empty()) report_unmatched_gesture(gesture);
 
-    report_unmatched_gesture(token);
-    return false;
+    if (action.was_suppressed && !executed && !action.wheel_used && action.was_tap) {
+        replay_right_click(action.right_down_point);
+    }
 }
 
 void GestureEngine::report_unmatched_gesture(const std::string& gesture) {
+    if (gesture.empty()) return;
     for (const auto& seen : reported_gestures_) {
         if (seen == gesture) return;
     }
     if (reported_gestures_.size() >= 32) reported_gestures_.erase(reported_gestures_.begin());
     reported_gestures_.push_back(gesture);
-
-    FB2K_console_formatter() << "Mouse Gesture Host: gesture \"" << gesture.c_str()
-                             << "\" has no binding";
+    post_log("Mouse Gesture Host: gesture \"" + gesture + "\" has no binding");
 }
 
-void GestureEngine::drain_queue() {
-    if (replay_pending_) {
-        replay_pending_ = false;
-        replay_right_click();
+void GestureEngine::replay_right_click(SessionPoint point) {
+    const POINT native_point{ point.x, point.y };
+    if (!over_main_window(main_window_, native_point)) {
+        post_log("Mouse Gesture Host: right-click replay cancelled because the saved point left the main window");
+        return;
+    }
+    if ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0) {
+        post_log("Mouse Gesture Host: right-click replay cancelled because the physical button is still down");
+        return;
     }
 
-    while (!pending_.empty()) {
-        const std::string gesture = pending_.front();
-        pending_.pop_front();
+    const int virtual_left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int virtual_top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int virtual_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int virtual_height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (virtual_width <= 0 || virtual_height <= 0) {
+        post_log("Mouse Gesture Host: right-click replay cancelled because virtual-screen metrics are invalid");
+        return;
+    }
 
-        // Snapshot остаётся неизменным, даже если команда откроет настройки и
-        // вызовет reload: индексы и порядок строк внутри этого прохода согласованы.
-        const BindingSnapshotPtr snapshot = snapshot_;
-        const auto matches = snapshot->exact_matches(gesture);
-        for (std::size_t i = 0; i < matches.size(); ++i) {
-            if (i > 0 && snapshot->settings().first_only) break;
+    const auto normalize = [](long value, int origin, int extent) {
+        const long long relative = static_cast<long long>(value) - origin;
+        return static_cast<LONG>((relative * 65535 + extent / 2) / extent);
+    };
 
-            const GestureBinding& binding = snapshot->settings().bindings[matches[i]];
-            std::string diagnostic;
-            if (!execute_binding(binding, &diagnostic)) {
-                // Привязка есть, но команда unavailable/conflict: показываем причину,
-                // а не маскируем её выполнением первой похожей команды.
-                FB2K_console_formatter()
-                    << "Mouse Gesture Host: gesture \"" << gesture.c_str()
-                    << "\" matched, but command \"" << binding.command_path.c_str()
-                    << "\" was not executed: " << diagnostic.c_str();
-            }
-        }
+    INPUT inputs[2] = {};
+    for (auto& input : inputs) {
+        input.type = INPUT_MOUSE;
+        input.mi.dx = normalize(point.x, virtual_left, virtual_width);
+        input.mi.dy = normalize(point.y, virtual_top, virtual_height);
+        input.mi.dwExtraInfo = kOwnMouseMarker;
+    }
+    inputs[0].mi.dwFlags = MOUSEEVENTF_RIGHTDOWN | MOUSEEVENTF_MOVE |
+                           MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP | MOUSEEVENTF_MOVE |
+                           MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+
+    if (SendInput(2, inputs, sizeof(INPUT)) != 2) {
+        post_log("Mouse Gesture Host: failed to replay the right click (" +
+                 std::to_string(static_cast<unsigned long>(GetLastError())) + ")");
     }
 }
 
-bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
-    if (snapshot_->settings().disabled) return false;
+void GestureEngine::health_check() {
+    if (mouse_queue_.size() != 0) process_mouse_queue();
 
-    // Свои же синтезированные события не перехватываем - иначе правый клик
-    // никогда не дойдёт до foobar2000. Игнорируем их только короткое время
-    // после SendInput: тачпады и часть мышей тоже помечают ввод как
-    // LLMHF_INJECTED, и постоянный фильтр отключил бы жесты для них.
-    if ((info.flags & LLMHF_INJECTED) != 0 && replay_guard_ != 0 &&
-        GetTickCount64() - replay_guard_ < 500) {
-        return false;
+    const bool left_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    const bool right_down = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+    SessionResult reconciled = session_.reconcile_buttons(left_down, right_down, *worker_snapshot_);
+    for (std::size_t i = 0; i < reconciled.action_count; ++i) {
+        process_action(reconciled.actions[i]);
     }
 
-    const POINT pt = info.pt;
+    POINT cursor = last_cursor_pos_;
+    GetCursorPos(&cursor);
+    const bool activity = cursor.x != last_cursor_pos_.x || cursor.y != last_cursor_pos_.y ||
+                          left_down != last_left_down_ || right_down != last_right_down_;
+    last_cursor_pos_ = cursor;
+    last_left_down_ = left_down;
+    last_right_down_ = right_down;
 
-    switch (msg) {
-    case WM_RBUTTONDOWN:
-    case WM_RBUTTONDBLCLK: {
-        // Рокер "L+R": ЛКМ уже зажата, кликаем ПКМ.
-        if (left_down_ && over_main_window(pt) &&
-            has_binding(token_id(Token::rocker_left_right))) {
-            right_down_ = true;
-            session_from_right_ = false;
-            rocker_armed_ = true;
-            return true;
+    const std::uint64_t now = GetTickCount64();
+    if (!health_.should_reinstall(now, activity)) return;
+
+    post_log("Mouse Gesture Host: input activity arrived without hook events; reinstalling the hook");
+    const bool success = reinstall_hook();
+    health_.note_reinstall(now, success);
+    if (!success) {
+        post_log("Mouse Gesture Host: next hook reinstall attempt in " +
+                 std::to_string(health_.backoff_ms()) + " ms");
+    }
+}
+
+bool GestureEngine::reinstall_hook() {
+    if (hook_ != nullptr) {
+        if (!UnhookWindowsHookEx(hook_)) {
+            post_log("Mouse Gesture Host: failed to unhook before reinstall (" +
+                     std::to_string(static_cast<unsigned long>(GetLastError())) + ")");
         }
-
-        if (!over_main_window(pt)) return false;
-
-        right_down_ = true;
-        session_from_right_ = true;
-        rocker_armed_ = false;
-        wheel_used_ = false;
-        wheel_sequence_.clear();
-
-        // Событие не отдаём хосту: иначе foobar2000 сразу начнёт своё
-        // перетаскивание треков правой кнопкой. Если жест не распознается,
-        // на отпускании отправим обычный правый клик.
-        suppress_right_ = true;
-        right_down_point_ = pt;
-        right_moved_ = false;
-        wheel_accum_ = 0;
-
-        recognizer_.set_stroke_length(snapshot_->settings().stroke_length);
-        recognizer_.begin(pt.x, pt.y);
-        return true;
+        hook_ = nullptr;
     }
 
-    case WM_LBUTTONDOWN: {
-        if (!over_main_window(pt)) return false;
-        left_down_ = true;
-
-        // Рокер "R+L": ПКМ уже зажата, кликаем ЛКМ.
-        if (right_down_ && session_from_right_ && !rocker_armed_ &&
-            has_binding(token_id(Token::rocker_right_left))) {
-            rocker_armed_ = true;
-            return true;
-        }
-        return false;
-    }
-
-    case WM_LBUTTONUP: {
-        const bool was_down = left_down_;
-        left_down_ = false;
-        if (was_down && rocker_armed_ && right_down_ && session_from_right_) {
-            rocker_armed_ = false;
-            queue_gesture(token_id(Token::rocker_right_left));
-            return true;
-        }
-        return false;
-    }
-
-    case WM_RBUTTONUP: {
-        const bool was_down = right_down_;
-        right_down_ = false;
-
-        if (!was_down) return false;
-
-        if (!session_from_right_) {
-            // Завершение рокера "L+R". Нажатие мы уже съели, поэтому съедаем
-            // и отпускание - иначе хост получил бы "up без down".
-            if (rocker_armed_) {
-                rocker_armed_ = false;
-                queue_gesture(token_id(Token::rocker_left_right));
-            }
-            return true;
-        }
-
-        bool swallow = rocker_armed_ || wheel_used_;
-        rocker_armed_ = false;
-
-        const bool wheel_in_use = wheel_used_;
-
-        // Сохраняем последний штрих, который оказался чуть короче основного
-        // порога: раньше он просто терялся при отпускании ПКМ.
-        recognizer_.finish();
-        const std::string gesture = recognizer_.canonical();
-        const auto match_candidates = recognizer_.match_candidates();
+    if ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0 &&
+        (GetAsyncKeyState(VK_RBUTTON) & 0x8000) == 0) {
+        mouse_queue_.clear();
+        mouse_process_posted_ = false;
+        session_.reset();
         recognizer_.cancel();
-
-        bool executed = false;
-        for (const auto& candidate : match_candidates) {
-            if (!candidate.empty() && has_binding(candidate)) {
-                queue_gesture(candidate);
-                executed = true;
-                swallow = true;
-                break;
-            }
-        }
-        if (!executed && !gesture.empty()) report_unmatched_gesture(gesture);
-
-        // ПКМ была подавлена. Если это был обычный щелчок (без сдвига), а жест
-        // не сработал - возвращаем foobar2000 правый клик, чтобы открылось
-        // контекстное меню. Отпускание кнопки при этом всегда съедаем сами:
-        // иначе хост получил бы "up без down".
-        const bool was_suppressed = suppress_right_;
-        const bool was_tap = !right_moved_;
-        suppress_right_ = false;
-        right_moved_ = false;
-
-        if (was_suppressed) {
-            swallow = true;
-            // Сам SendInput - только из цикла сообщений: изнутри хука он
-            // ждёт LowLevelHooksTimeout и меню открывается с задержкой.
-            if (!executed && !wheel_in_use && was_tap) request_right_click_replay();
-        }
-
-        wheel_used_ = false;
-        wheel_sequence_.clear();
-        return swallow;
     }
 
-    case WM_MOUSEMOVE: {
-        if (right_down_ && session_from_right_ && !rocker_armed_) {
-            recognizer_.move(pt.x, pt.y);
-
-            if (!right_moved_) {
-                const int dx = pt.x - right_down_point_.x;
-                const int dy = pt.y - right_down_point_.y;
-                if (dx > kDragThreshold || dx < -kDragThreshold ||
-                    dy > kDragThreshold || dy < -kDragThreshold) {
-                    right_moved_ = true;
-                }
-            }
-
-            // ВАЖНО: WM_MOUSEMOVE нельзя съедать. Возврат true из
-            // WH_MOUSE_LL для движения блокирует само перемещение курсора
-            // (курсор "замерзает"). Драг у хоста уже не начнётся, потому что
-            // мы съели WM_RBUTTONDOWN, - этого достаточно.
-        }
+    hook_ = SetWindowsHookExW(WH_MOUSE_LL, &GestureEngine::mouse_hook_proc, instance_, 0);
+    if (hook_ == nullptr) {
+        post_log("Mouse Gesture Host: failed to reinstall the mouse hook (" +
+                 std::to_string(static_cast<unsigned long>(GetLastError())) + ")");
         return false;
     }
-
-    case WM_MOUSEWHEEL: {
-        if (!right_down_ || !session_from_right_ || rocker_armed_) return false;
-        // Колесо вне окна foobar2000 не должно превращаться в жест.
-        if (!over_main_window(pt)) return false;
-
-        const int delta = static_cast<short>(HIWORD(info.mouseData));
-        if (delta == 0) return false;
-
-        // Копим дельту: у высокоразрешённых колёс и тачпадов один щелчок
-        // приходит как несколько событий по 1..30 единиц.
-        wheel_accum_ += delta;
-        int notches = wheel_accum_ / WHEEL_DELTA;
-        if (notches == 0) return false;
-        wheel_accum_ -= notches * WHEEL_DELTA;
-
-        int count = notches > 0 ? notches : -notches;
-        if (count > 4) count = 4;
-
-        bool handled = false;
-        for (int i = 0; i < count; ++i) {
-            if (handle_wheel_notch(notches > 0)) handled = true;
-        }
-        return handled;
-    }
-
-    default:
-        return false;
-    }
+    post_log("Mouse Gesture Host: mouse hook reinstalled");
+    return true;
 }
 
 LRESULT CALLBACK GestureEngine::mouse_hook_proc(int code, WPARAM wparam, LPARAM lparam) {
     if (code == HC_ACTION) {
         const auto* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lparam);
-        if (info != nullptr && GestureEngine::instance().handle(wparam, *info)) {
-            // Съедаем событие: оно не должно дойти ни до foobar2000, ни до других приложений.
-            return 1;
+        GestureEngine& engine = instance();
+        if (info != nullptr && info->dwExtraInfo != kOwnMouseMarker) {
+            engine.health_.note_event(GetTickCount64());
+            if (!engine.worker_snapshot_->settings().disabled) {
+                SessionEvent event;
+                if (make_session_event(wparam, *info, engine.main_window_, event)) {
+                    const GestureSession previous = engine.session_;
+                    SessionResult result = engine.session_.handle_event(event, *engine.worker_snapshot_);
+                    QueuedMouseEvent queued;
+                    queued.result = result;
+                    queued.droppable = (wparam == WM_MOUSEMOVE);
+                    if (engine.mouse_queue_.push(queued)) {
+                        if (!engine.mouse_process_posted_ &&
+                            PostMessageW(engine.worker_sink_, kMsgProcessMouse, 0, 0)) {
+                            engine.mouse_process_posted_ = true;
+                        }
+                        if (result.swallow) return 1;
+                    } else if (!queued.droppable) {
+                        // Fail open для критического события; состояние не должно
+                        // указывать на действие, которое не попало в очередь. Потерянный
+                        // move всё равно отмечает drag, чтобы tap replay не был ложным.
+                        engine.session_ = previous;
+                    }
+                }
+            }
         }
     }
     return CallNextHookEx(nullptr, code, wparam, lparam);
 }
 
 LRESULT CALLBACK GestureEngine::sink_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
-    if (msg == kMsgExecuteGesture) {
-        GestureEngine::instance().drain_queue();
+    GestureEngine& engine = instance();
+    if (hwnd == engine.main_sink_ && msg == kMsgExecuteGesture) {
+        engine.drain_main_queue();
         return 0;
+    }
+    if (hwnd == engine.worker_sink_) {
+        switch (msg) {
+        case kMsgProcessMouse:
+            engine.process_mouse_queue();
+            return 0;
+        case kMsgReload: {
+            std::unique_ptr<ReloadMessage> message(reinterpret_cast<ReloadMessage*>(lparam));
+            if (message) {
+                engine.worker_snapshot_ = message->snapshot;
+                engine.recognizer_.set_stroke_length(engine.worker_snapshot_->settings().stroke_length);
+                if (engine.worker_snapshot_->settings().disabled) {
+                    engine.mouse_queue_.clear();
+                    engine.session_.reset();
+                    engine.recognizer_.cancel();
+                }
+            }
+            return 0;
+        }
+        case kMsgShutdown:
+            PostQuitMessage(0);
+            return 0;
+        case WM_TIMER:
+            if (wparam == kHealthTimer) engine.health_check();
+            return 0;
+        default:
+            break;
+        }
     }
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
