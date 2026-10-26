@@ -52,7 +52,7 @@ void prepare_gesture_list_row(GestureListRow& row, const GestureBinding& binding
 
     std::vector<Token> tokens;
     if (!parse_gesture(binding.gesture, tokens) || tokens.empty()) {
-        row.first_token_rank = std::numeric_limits<int>::max();
+        row.first_token_rank = (std::numeric_limits<int>::max)();
         row.gesture_token_count = 0;
         return;
     }
