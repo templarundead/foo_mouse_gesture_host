@@ -1365,13 +1365,13 @@ void GesturePreferencesInstance::layout() {
 
     // --- общие метрики (в единицах 96 DPI, масштабируются через scale()) ---
     const int margin = scale(10);
-    const int top_margin = scale(6);
     const int gap = scale(6);
     const int label_height = scale(14);
     const int control_height = scale(22);
 
-    // Встроенная шапка находится внутри рамки таблицы, как у ListView.
-    const int list_top = top_margin;
+    // Клиентская область страницы уже учитывает inset хоста; собственную
+    // рамку таблицы ставим непосредственно на её верхнюю кромку.
+    const int list_top = 0;
 
     // --- крестовина (D-Pad) -------------------------------------------------
     // Диагонали занимают углы: UL/UR находятся выше ↑, а DL/DR — ниже ↓.
