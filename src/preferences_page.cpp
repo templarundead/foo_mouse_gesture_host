@@ -983,8 +983,6 @@ private:
     HWND hint_label_ = nullptr;
     HFONT header_font_ = nullptr;
 
-    HWND up_label_ = nullptr;
-    HWND down_label_ = nullptr;
     HWND left_label_ = nullptr;
     HWND right_label_ = nullptr;
     HWND wheel_label_ = nullptr;
@@ -1246,8 +1244,6 @@ void GesturePreferencesInstance::create_children() {
         L"R+L: hold RMB and click LMB; L+R: vice versa.",
         SS_LEFT);
 
-    up_label_ = make_static(L"up", SS_CENTER);
-    down_label_ = make_static(L"down", SS_CENTER);
     left_label_ = make_static(L"left", SS_LEFT);
     right_label_ = make_static(L"right", SS_LEFT);
     wheel_label_ = make_static(L"wheel", SS_LEFT);
@@ -1374,10 +1370,8 @@ void GesturePreferencesInstance::layout() {
     const int list_top = 0;
 
     // --- крестовина (D-Pad) -------------------------------------------------
-    // Диагонали занимают углы: UL/UR находятся выше ↑, а DL/DR — ниже ↓.
-    // Центральный ряд по-прежнему: [←][BS][→].
+    // Квадратные цели 38 DIP образуют непрерывную сетку 3×3 с BS в центре.
     const int cell = scale(38);
-    const int cell_gap = scale(4);
 
     // Ширины подписей left/right берём по фактическому тексту: фиксированные
     // 44 px сдвигали крестовину вправо и слово "left" не попадало на одну
@@ -1388,9 +1382,7 @@ void GesturePreferencesInstance::layout() {
     if (side_right < scale(24)) side_right = scale(24);
     const int label_gap = scale(6);
 
-    // Нижние диагонали делят строку с подписью down, но высоту задаёт кнопка.
-    const int pad_height = label_height + control_height + cell_gap + control_height + cell_gap +
-                           control_height + control_height;
+    const int pad_height = 3 * cell;
 
     // --- wheel / rocker / stroke / галочки ----------------------------------
     const int wheel_height = control_height + label_height;          // кнопки + подписи up/down
@@ -1428,7 +1420,7 @@ void GesturePreferencesInstance::layout() {
     const int pad_x = margin + side_left + label_gap;
 
     // Правый край крестовины (с подписью "right") задаёт ширину левой колонки.
-    const int pad_right = pad_x + 3 * cell + 2 * cell_gap + label_gap + side_right;
+    const int pad_right = pad_x + 3 * cell + label_gap + side_right;
     const int left_width = pad_right - margin;
 
     // Остальное отдаём форме: поля Gesture/Group/Command/Place получаются
@@ -1515,34 +1507,28 @@ void GesturePreferencesInstance::layout() {
     const int lower_top = count_top + count_height + count_gap;
 
     // --- левая колонка ------------------------------------------------------
-    const int pad_center = pad_x + cell + cell_gap + cell / 2;   // центр колонки BS
-    const int up_x = pad_center - cell / 2;
-    const int left_x = pad_x;
-    const int bs_x = pad_x + cell + cell_gap;
-    const int right_x = pad_x + 2 * (cell + cell_gap);
-    const int down_x = up_x;
+    const int pad_top = lower_top;
+    const int middle_x = pad_x + cell;
+    const int right_x = pad_x + 2 * cell;
 
-    int y = lower_top;
-    MoveWindow(dir_up_left_, left_x, y, cell, control_height, TRUE);
-    MoveWindow(up_label_, up_x, y, cell, label_height, TRUE);
-    MoveWindow(dir_up_right_, right_x, y, cell, control_height, TRUE);
-    y += label_height;
-    MoveWindow(dir_up_, up_x, y, cell, control_height, TRUE);
-    y += control_height + cell_gap;
+    MoveWindow(dir_up_left_, pad_x, pad_top, cell, cell, TRUE);
+    MoveWindow(dir_up_, middle_x, pad_top, cell, cell, TRUE);
+    MoveWindow(dir_up_right_, right_x, pad_top, cell, cell, TRUE);
 
-    MoveWindow(left_label_, margin, y, side_left, control_height, TRUE);
-    MoveWindow(dir_left_, left_x, y, cell, control_height, TRUE);
-    MoveWindow(dir_backspace_, bs_x, y, cell, control_height, TRUE);
-    MoveWindow(dir_right_, right_x, y, cell, control_height, TRUE);
-    MoveWindow(right_label_, right_x + cell + label_gap, y, side_right, control_height, TRUE);
-    y += control_height + cell_gap;
+    const int middle_y = pad_top + cell;
+    const int side_label_y = middle_y + (cell - control_height) / 2;
+    MoveWindow(left_label_, margin, side_label_y, side_left, control_height, TRUE);
+    MoveWindow(dir_left_, pad_x, middle_y, cell, cell, TRUE);
+    MoveWindow(dir_backspace_, middle_x, middle_y, cell, cell, TRUE);
+    MoveWindow(dir_right_, right_x, middle_y, cell, cell, TRUE);
+    MoveWindow(right_label_, right_x + cell + label_gap, side_label_y, side_right, control_height, TRUE);
 
-    MoveWindow(dir_down_, down_x, y, cell, control_height, TRUE);
-    y += control_height;
-    MoveWindow(dir_down_left_, left_x, y, cell, control_height, TRUE);
-    MoveWindow(down_label_, down_x, y, cell, label_height, TRUE);
-    MoveWindow(dir_down_right_, right_x, y, cell, control_height, TRUE);
-    y += control_height + pad_to_wheel_gap;
+    const int bottom_y = pad_top + 2 * cell;
+    MoveWindow(dir_down_left_, pad_x, bottom_y, cell, cell, TRUE);
+    MoveWindow(dir_down_, middle_x, bottom_y, cell, cell, TRUE);
+    MoveWindow(dir_down_right_, right_x, bottom_y, cell, cell, TRUE);
+
+    int y = pad_top + pad_height + pad_to_wheel_gap;
 
     // --- wheel: подпись слева, кнопки в один ряд, подписи up/down под ними --
     MoveWindow(wheel_label_, margin, y, scale(52), control_height, TRUE);
