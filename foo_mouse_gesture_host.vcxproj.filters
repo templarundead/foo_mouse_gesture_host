@@ -21,6 +21,9 @@
     <ClCompile Include="src\gesture_engine.cpp">
       <Filter>src</Filter>
     </ClCompile>
+    <ClCompile Include="src\gesture_list_sort.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\gesture_recognizer.cpp">
       <Filter>src</Filter>
     </ClCompile>
@@ -57,6 +60,9 @@
       <Filter>src</Filter>
     </ClInclude>
     <ClInclude Include="src\gesture_engine.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\gesture_list_sort.h">
       <Filter>src</Filter>
     </ClInclude>
     <ClInclude Include="src\gesture_recognizer.h">

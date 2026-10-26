@@ -1,6 +1,7 @@
 #include "binding_index.h"
 #include "command_identity.h"
 #include "gesture_config.h"
+#include "gesture_list_sort.h"
 #include "gesture_recognizer.h"
 #include "gesture_session.h"
 #include "gesture_tokens.h"
@@ -475,6 +476,203 @@ void test_binding_index_differential() {
     CHECK_TRUE(!wheel_snapshot.wheel_match(mgh::kInvalidWheelSequence).prefix);
 }
 
+std::wstring ascii_wide_for_sort(std::string_view text) {
+    return std::wstring(text.begin(), text.end());
+}
+
+mgh::GestureListRow make_sort_row(const mgh::GestureBinding& binding, int binding_index) {
+    mgh::GestureListRow row;
+    row.binding_index = binding_index;
+    row.gesture = ascii_wide_for_sort(binding.gesture);
+    row.command = ascii_wide_for_sort(binding.group + ": " + binding.command_path);
+    row.place = ascii_wide_for_sort(binding.place);
+    mgh::prepare_gesture_list_row(row, binding);
+    return row;
+}
+
+std::vector<mgh::GestureListRow> make_sort_rows(const std::vector<mgh::GestureBinding>& bindings) {
+    std::vector<mgh::GestureListRow> rows;
+    for (std::size_t i = 0; i < bindings.size(); ++i) {
+        rows.push_back(make_sort_row(bindings[i], static_cast<int>(i)));
+    }
+    return rows;
+}
+
+std::vector<int> sort_binding_order(const std::vector<mgh::GestureListRow>& rows) {
+    std::vector<int> order;
+    for (const auto& row : rows) order.push_back(row.binding_index);
+    return order;
+}
+
+void test_gesture_list_sort_state_and_gesture() {
+    CHECK_TRUE(mgh::gesture_sort_column_from_index(0) == mgh::GestureSortColumn::gesture);
+    CHECK_TRUE(mgh::gesture_sort_column_from_index(1) == mgh::GestureSortColumn::command);
+    CHECK_TRUE(mgh::gesture_sort_column_from_index(2) == mgh::GestureSortColumn::place);
+    CHECK_TRUE(mgh::gesture_sort_column_from_index(-1) == mgh::GestureSortColumn::none);
+    CHECK_TRUE(mgh::gesture_sort_column_from_index(3) == mgh::GestureSortColumn::none);
+
+    mgh::GestureSortState state;
+    CHECK_TRUE(state.column == mgh::GestureSortColumn::none);
+    state = mgh::next_gesture_sort_state(state, mgh::GestureSortColumn::gesture);
+    CHECK_TRUE((state == mgh::GestureSortState{ mgh::GestureSortColumn::gesture,
+                                                mgh::GestureSortDirection::ascending }));
+    state = mgh::next_gesture_sort_state(state, mgh::GestureSortColumn::gesture);
+    CHECK_TRUE((state == mgh::GestureSortState{ mgh::GestureSortColumn::gesture,
+                                                mgh::GestureSortDirection::descending }));
+    state = mgh::next_gesture_sort_state(state, mgh::GestureSortColumn::gesture);
+    CHECK_TRUE(state == mgh::GestureSortState{});
+    state = mgh::next_gesture_sort_state(state, mgh::GestureSortColumn::place);
+    CHECK_TRUE(state.column == mgh::GestureSortColumn::place);
+    state = mgh::next_gesture_sort_state(state, mgh::GestureSortColumn::command);
+    CHECK_TRUE((state == mgh::GestureSortState{ mgh::GestureSortColumn::command,
+                                                mgh::GestureSortDirection::ascending }));
+
+    const std::vector<mgh::GestureBinding> bindings = {
+        { "R+L", "main", "Command/Rocker", "now_playing" },
+        { "D", "main", "Command/Delta", "main_window" },
+        { "WU", "main", "Command/Wheel up", "playlist" },
+        { "U R", "main", "Command/Up right", "main_window" },
+        { "U", "main", "Command/Up", "playlist" },
+        { "WD", "main", "Command/Wheel down", "now_playing" },
+        { "UL", "main", "Command/Up left", "main_window" },
+    };
+    const auto manual = make_sort_rows(bindings);
+    const auto original_order = sort_binding_order(manual);
+    const auto ascending = mgh::make_gesture_list_view(
+        manual, { mgh::GestureSortColumn::gesture, mgh::GestureSortDirection::ascending });
+    const auto descending = mgh::make_gesture_list_view(
+        manual, { mgh::GestureSortColumn::gesture, mgh::GestureSortDirection::descending });
+    CHECK_TRUE(sort_binding_order(ascending) == std::vector<int>({ 4, 3, 1, 6, 2, 5, 0 }));
+    CHECK_TRUE(sort_binding_order(descending) == std::vector<int>({ 0, 5, 2, 6, 1, 3, 4 }));
+    CHECK_TRUE(sort_binding_order(manual) == original_order);
+    CHECK_TRUE(sort_binding_order(mgh::make_gesture_list_view(manual, {})) == original_order);
+
+    state = {};
+    for (int cycle = 0; cycle < 3; ++cycle) {
+        state = mgh::next_gesture_sort_state(state, mgh::GestureSortColumn::gesture);
+        state = mgh::next_gesture_sort_state(state, mgh::GestureSortColumn::gesture);
+        state = mgh::next_gesture_sort_state(state, mgh::GestureSortColumn::gesture);
+        CHECK_TRUE(state.column == mgh::GestureSortColumn::none);
+        CHECK_TRUE(sort_binding_order(mgh::make_gesture_list_view(manual, state)) == original_order);
+    }
+}
+
+void test_gesture_list_sort_command_place_and_ties() {
+    std::vector<mgh::GestureBinding> bindings = {
+        { "U", "main", "Command/Beta", "playlist" },
+        { "D", "main", "Command/Alpha", "main_window" },
+        { "R", "main", "Command/Gamma", "now_playing" },
+    };
+    auto manual = make_sort_rows(bindings);
+    manual[0].command = L"main menu: beta";
+    manual[1].command = L"Main menu: Alpha";
+    manual[2].command = L"main menu: Gamma";
+    manual[0].place = L"Playlist";
+    manual[1].place = L"Main Window";
+    manual[2].place = L"Now Playing";
+
+    const auto command_asc = mgh::make_gesture_list_view(
+        manual, { mgh::GestureSortColumn::command, mgh::GestureSortDirection::ascending });
+    const auto command_desc = mgh::make_gesture_list_view(
+        manual, { mgh::GestureSortColumn::command, mgh::GestureSortDirection::descending });
+    CHECK_TRUE(sort_binding_order(command_asc) == std::vector<int>({ 1, 0, 2 }));
+    CHECK_TRUE(sort_binding_order(command_desc) == std::vector<int>({ 2, 0, 1 }));
+
+    const auto place_asc = mgh::make_gesture_list_view(
+        manual, { mgh::GestureSortColumn::place, mgh::GestureSortDirection::ascending });
+    const auto place_desc = mgh::make_gesture_list_view(
+        manual, { mgh::GestureSortColumn::place, mgh::GestureSortDirection::descending });
+    CHECK_TRUE(sort_binding_order(place_asc) == std::vector<int>({ 1, 2, 0 }));
+    CHECK_TRUE(sort_binding_order(place_desc) == std::vector<int>({ 0, 2, 1 }));
+
+    bindings = {
+        { "U", "main", "Same", "main_window" },
+        { "D", "main", "Same", "main_window" },
+        { "U", "main", "Same", "main_window" },
+    };
+    manual = make_sort_rows(bindings);
+    const auto gesture_asc = mgh::make_gesture_list_view(
+        manual, { mgh::GestureSortColumn::gesture, mgh::GestureSortDirection::ascending });
+    const auto gesture_desc = mgh::make_gesture_list_view(
+        manual, { mgh::GestureSortColumn::gesture, mgh::GestureSortDirection::descending });
+    CHECK_TRUE(sort_binding_order(gesture_asc) == std::vector<int>({ 0, 2, 1 }));
+    CHECK_TRUE(sort_binding_order(gesture_desc) == std::vector<int>({ 1, 0, 2 }));
+
+    const auto command_ties = mgh::make_gesture_list_view(
+        manual, { mgh::GestureSortColumn::command, mgh::GestureSortDirection::descending });
+    const auto place_ties = mgh::make_gesture_list_view(
+        manual, { mgh::GestureSortColumn::place, mgh::GestureSortDirection::descending });
+    CHECK_TRUE(sort_binding_order(command_ties) == std::vector<int>({ 0, 1, 2 }));
+    CHECK_TRUE(sort_binding_order(place_ties) == std::vector<int>({ 0, 1, 2 }));
+
+    auto left = make_sort_row({ "U", "main", "A", "main_window" }, 0);
+    auto right = make_sort_row({ "U", "main", "B", "main_window" }, 1);
+    left.command = right.command = L"Same label";
+    CHECK_TRUE(mgh::compare_gesture_list_rows(left, right, mgh::GestureSortColumn::command) < 0);
+    left.command_path = right.command_path = "Same path";
+    left.group_id = "a";
+    right.group_id = "b";
+    CHECK_TRUE(mgh::compare_gesture_list_rows(left, right, mgh::GestureSortColumn::command) < 0);
+    left.place = right.place = L"Same place";
+    left.place_id = "a";
+    right.place_id = "b";
+    CHECK_TRUE(mgh::compare_gesture_list_rows(left, right, mgh::GestureSortColumn::place) < 0);
+}
+
+void test_gesture_list_sort_view_and_selection() {
+    const std::vector<mgh::GestureBinding> bindings = {
+        { "WU", "main", "Command/Wheel", "playlist" },
+        { "U", "main", "Command/Up", "main_window" },
+        { "R+L", "main", "Command/Rocker", "now_playing" },
+        { "D", "main", "Command/Down", "main_window" },
+    };
+    const auto original_bindings = bindings;
+    const auto manual = make_sort_rows(bindings);
+    const auto original_order = sort_binding_order(manual);
+    const std::vector<mgh::GestureSortState> states = {
+        {},
+        { mgh::GestureSortColumn::gesture, mgh::GestureSortDirection::ascending },
+        { mgh::GestureSortColumn::gesture, mgh::GestureSortDirection::descending },
+        { mgh::GestureSortColumn::command, mgh::GestureSortDirection::ascending },
+        { mgh::GestureSortColumn::command, mgh::GestureSortDirection::descending },
+        { mgh::GestureSortColumn::place, mgh::GestureSortDirection::ascending },
+        { mgh::GestureSortColumn::place, mgh::GestureSortDirection::descending },
+    };
+
+    for (const auto state : states) {
+        const auto view = mgh::make_gesture_list_view(manual, state);
+        auto actual_indices = sort_binding_order(view);
+        auto expected_indices = original_order;
+        std::sort(actual_indices.begin(), actual_indices.end());
+        std::sort(expected_indices.begin(), expected_indices.end());
+        CHECK_TRUE(actual_indices == expected_indices);
+        CHECK_TRUE(sort_binding_order(manual) == original_order);
+        CHECK_TRUE(bindings == original_bindings);
+
+        for (std::size_t binding = 0; binding < bindings.size(); ++binding) {
+            const int binding_index = static_cast<int>(binding);
+            const int display = mgh::gesture_row_for_binding(view, binding_index);
+            CHECK_TRUE(display >= 0);
+            if (display >= 0) {
+                CHECK_TRUE(view[static_cast<std::size_t>(display)].binding_index == binding_index);
+                CHECK_TRUE(bindings[static_cast<std::size_t>(binding_index)] == original_bindings[binding]);
+            }
+        }
+    }
+
+    const std::vector<mgh::GestureListRow> empty;
+    for (const auto state : states) {
+        CHECK_TRUE(mgh::make_gesture_list_view(empty, state).empty());
+        CHECK_TRUE(mgh::gesture_row_for_binding(empty, 0) == -1);
+    }
+    const auto single = make_sort_rows({ { "U", "main", "Only", "main_window" } });
+    for (const auto state : states) {
+        const auto view = mgh::make_gesture_list_view(single, state);
+        CHECK_TRUE(view.size() == 1);
+        CHECK_TRUE(mgh::gesture_row_for_binding(view, 0) == 0);
+    }
+}
+
 mgh::BindingSnapshot make_session_snapshot(const std::vector<std::string>& gestures) {
     mgh::GestureSettings settings;
     for (const auto& gesture : gestures) {
@@ -715,6 +913,9 @@ int main(int argc, char** argv) {
     test_config_corruption_and_duplicates();
     test_command_identity_resolution();
     test_binding_index_differential();
+    test_gesture_list_sort_state_and_gesture();
+    test_gesture_list_sort_command_place_and_ties();
+    test_gesture_list_sort_view_and_selection();
     test_session_idle_drag_and_reconcile();
     test_session_rocker();
     test_session_wheel_and_fractional_delta();
@@ -726,7 +927,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::cout << "Logic tests passed: 12 tokens, candidate order, "
-              << trajectory_checks << " deterministic trajectories, config, index, session and health\n";
+              << trajectory_checks << " deterministic trajectories, config, index, sorting, session and health\n";
     if (argc == 2 && std::string_view(argv[1]) == "--benchmark") {
         run_binding_benchmark();
     } else if (argc != 1) {
