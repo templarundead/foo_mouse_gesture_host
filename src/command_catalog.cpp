@@ -1,3 +1,4 @@
+#include "common.h"
 #include "command_catalog.h"
 
 namespace mgh {

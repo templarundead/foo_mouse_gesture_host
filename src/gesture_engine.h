@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common.h"
 #include "gesture_config.h"
 #include "gesture_recognizer.h"
 

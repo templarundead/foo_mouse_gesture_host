@@ -1,3 +1,4 @@
+#include "common.h"
 #include "gesture_config.h"
 
 namespace mgh {
