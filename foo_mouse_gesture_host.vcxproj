@@ -124,6 +124,7 @@
   <ItemGroup>
     <ClInclude Include="src\binding_index.h" />
     <ClInclude Include="src\command_catalog.h" />
+    <ClInclude Include="src\command_identity.h" />
     <ClInclude Include="src\common.h" />
     <ClInclude Include="src\component_version.h" />
     <ClInclude Include="src\gesture_config.h" />

@@ -41,6 +41,9 @@
     <ClInclude Include="src\command_catalog.h">
       <Filter>src</Filter>
     </ClInclude>
+    <ClInclude Include="src\command_identity.h">
+      <Filter>src</Filter>
+    </ClInclude>
     <ClInclude Include="src\common.h">
       <Filter>src</Filter>
     </ClInclude>

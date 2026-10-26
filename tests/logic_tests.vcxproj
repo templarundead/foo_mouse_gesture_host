@@ -92,6 +92,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\binding_index.h" />
+    <ClInclude Include="..\src\command_identity.h" />
     <ClInclude Include="..\src\gesture_config.h" />
     <ClInclude Include="..\src\gesture_recognizer.h" />
     <ClInclude Include="..\src\gesture_tokens.h" />

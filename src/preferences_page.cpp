@@ -1777,8 +1777,10 @@ void GesturePreferencesInstance::update_buttons() {
     const int count = static_cast<int>(settings_.bindings.size());
     const bool has_selection = selected >= 0 && selected < count;
 
-    const bool has_command = command_combo_ != nullptr && !catalog_.empty() &&
-                             ComboBox_GetCurSel(command_combo_) >= 0;
+    const int command_index = command_combo_ != nullptr ? ComboBox_GetCurSel(command_combo_) : -1;
+    const bool has_command = !catalog_.empty() && command_index >= 0 &&
+                             command_index < static_cast<int>(catalog_.size()) &&
+                             catalog_[static_cast<std::size_t>(command_index)].selectable;
 
     EnableWindow(add_button_, has_command);
     EnableWindow(update_button_, has_selection && has_command);
@@ -1817,24 +1819,31 @@ void GesturePreferencesInstance::on_list_selection_changed(int binding_index) {
     ComboBox_SetCurSel(group_combo_, group_index);
     refresh_command_list();
 
-    int command_index = -1;
-    for (std::size_t i = 0; i < catalog_.size(); ++i) {
-        if (catalog_[i].path == binding.command_path) {
-            command_index = static_cast<int>(i);
-            break;
-        }
-    }
+    const CommandMatch match = resolve_command(binding, catalog_);
+    int command_index = match.status == CommandResolution::found
+        ? static_cast<int>(match.index)
+        : -1;
     if (command_index < 0) {
-        // Команда больше не существует (или меню изменилось) - показываем
-        // сохранённый путь, чтобы привязку можно было поправить вручную.
+        // Сохранённую команду показываем, но не делаем вид, что она исполняема.
+        // Synthetic строка не участвует в Add/Update и не выбирает первый дубликат.
         CatalogEntry missing;
         missing.path = binding.command_path;
         missing.group = binding.group;
+        missing.command_guid = binding.command_guid;
+        missing.subcommand_guid = binding.subcommand_guid;
+        missing.node_path = binding.node_path;
+        missing.selectable = false;
         catalog_.push_back(missing);
 
-        const std::wstring label = wide_from_utf8(missing.path);
+        const char* status = match.status == CommandResolution::ambiguous
+            ? "conflict" : "unavailable";
+        const std::wstring label = wide_from_utf8(missing.path + " [" + status + "]");
         ComboBox_AddString(command_combo_, label.c_str());
         command_index = static_cast<int>(catalog_.size()) - 1;
+
+        FB2K_console_formatter() << "Mouse Gesture Host: binding \"" << binding.gesture.c_str()
+                                 << "\" -> \"" << binding.command_path.c_str() << "\" is " << status
+                                 << ": " << match.message.c_str();
     }
     ComboBox_SetCurSel(command_combo_, command_index);
 
@@ -1846,6 +1855,7 @@ void GesturePreferencesInstance::on_list_selection_changed(int binding_index) {
     ComboBox_SetCurSel(place_combo_, place_index);
 
     updating_ = false;
+    update_buttons();
 }
 
 void GesturePreferencesInstance::on_add() {
@@ -1878,10 +1888,17 @@ void GesturePreferencesInstance::on_add() {
         return;
     }
 
+    const CatalogEntry& selected_entry = catalog_[static_cast<std::size_t>(command_index)];
+    if (!selected_entry.selectable) {
+        MessageBoxW(hwnd_, L"The selected command is unavailable or conflicting. Choose a valid command.",
+                    L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
     GestureBinding binding;
     binding.gesture = gesture;
     binding.group = current_group_id();
-    binding.command_path = catalog_[static_cast<std::size_t>(command_index)].path;
+    assign_command_identity(binding, selected_entry);
     binding.place = current_place_id();
 
     settings_.bindings.push_back(binding);
@@ -1916,10 +1933,17 @@ void GesturePreferencesInstance::on_update() {
         return;
     }
 
+    const CatalogEntry& selected_entry = catalog_[static_cast<std::size_t>(command_index)];
+    if (!selected_entry.selectable) {
+        MessageBoxW(hwnd_, L"The selected command is unavailable or conflicting. Choose a valid command.",
+                    L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
     GestureBinding binding;
     binding.gesture = gesture;
     binding.group = current_group_id();
-    binding.command_path = catalog_[static_cast<std::size_t>(command_index)].path;
+    assign_command_identity(binding, selected_entry);
     binding.place = current_place_id();
 
     settings_.bindings[static_cast<std::size_t>(index)] = binding;

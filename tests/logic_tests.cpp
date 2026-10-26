@@ -1,4 +1,5 @@
 #include "binding_index.h"
+#include "command_identity.h"
 #include "gesture_config.h"
 #include "gesture_recognizer.h"
 #include "gesture_tokens.h"
@@ -318,6 +319,67 @@ void test_config_corruption_and_duplicates() {
     CHECK_TRUE(std::string(mgh::place_label("not a place")) == "unknown place");
 }
 
+void test_command_identity_resolution() {
+    const std::string guid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    std::vector<mgh::CatalogEntry> entries(2);
+    entries[0].path = "Playback/Renamed";
+    entries[0].group = "main";
+    entries[0].command_guid = guid;
+    entries[0].node_path = "0.1";
+    entries[1].path = "Playback/Other";
+    entries[1].group = "main";
+    entries[1].command_guid = "11111111-2222-3333-4444-555555555555";
+    entries[1].node_path = "0.2";
+
+    mgh::GestureBinding binding("R", "main", "Playback/Original", "main_window", guid);
+    auto match = mgh::resolve_command(binding, entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::found);
+    CHECK_TRUE(match.index == 0);
+
+    entries[1].command_guid = guid;
+    match = mgh::resolve_command(binding, entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::ambiguous);
+    entries[1].command_guid = "11111111-2222-3333-4444-555555555555";
+
+    binding = mgh::GestureBinding("R", "main", "Playback/Renamed", "main_window", "", "", "0.1");
+    match = mgh::resolve_command(binding, entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::found);
+    CHECK_TRUE(match.index == 0);
+    binding.command_path = "Playback/Wrong label";
+    match = mgh::resolve_command(binding, entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::unavailable);
+
+    binding = mgh::GestureBinding("R", "main", "Playback/Renamed", "main_window");
+    match = mgh::resolve_command(binding, entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::found);
+    CHECK_TRUE(match.index == 0);
+    binding.command_path = "Renamed";
+    match = mgh::resolve_command(binding, entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::unavailable);
+
+    entries[1].path = entries[0].path;
+    entries[1].command_guid.clear();
+    entries[0].command_guid.clear();
+    binding = mgh::GestureBinding("R", "main", entries[0].path, "main_window");
+    match = mgh::resolve_command(binding, entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::ambiguous);
+
+    binding.group = "unknown";
+    match = mgh::resolve_command(binding, entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::invalid);
+    binding.group = "main";
+    binding.place = "unknown";
+    match = mgh::resolve_command(binding, entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::invalid);
+
+    mgh::GestureBinding assigned;
+    mgh::assign_command_identity(assigned, entries[0]);
+    CHECK_TRUE(assigned.command_path == entries[0].path);
+    CHECK_TRUE(assigned.command_guid == entries[0].command_guid);
+    CHECK_TRUE(assigned.subcommand_guid == entries[0].subcommand_guid);
+    CHECK_TRUE(assigned.node_path == entries[0].node_path);
+}
+
 std::vector<mgh::GestureBinding> make_benchmark_bindings(std::size_t count) {
     std::vector<mgh::GestureBinding> bindings;
     bindings.reserve(count);
@@ -460,6 +522,7 @@ int main(int argc, char** argv) {
     test_recognizer_trajectories();
     test_config_roundtrip_and_migration();
     test_config_corruption_and_duplicates();
+    test_command_identity_resolution();
     test_binding_index_differential();
 
     if (failures != 0) {

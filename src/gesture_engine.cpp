@@ -198,14 +198,14 @@ void GestureEngine::drain_queue() {
             if (i > 0 && snapshot->settings().first_only) break;
 
             const GestureBinding& binding = snapshot->settings().bindings[matches[i]];
-            if (!execute_binding(binding)) {
-                // Привязка есть, но команда не найдена (меню переименовали,
-                // компонент не загрузился) - иначе это выглядит как
-                // "жест не работает".
+            std::string diagnostic;
+            if (!execute_binding(binding, &diagnostic)) {
+                // Привязка есть, но команда unavailable/conflict: показываем причину,
+                // а не маскируем её выполнением первой похожей команды.
                 FB2K_console_formatter()
                     << "Mouse Gesture Host: gesture \"" << gesture.c_str()
                     << "\" matched, but command \"" << binding.command_path.c_str()
-                    << "\" was not found";
+                    << "\" was not executed: " << diagnostic.c_str();
             }
         }
     }
