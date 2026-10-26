@@ -127,12 +127,44 @@ jobs:
           path: dist/*.fb2k-component
           if-no-files-found: error
 
+  logic-tests:
+    name: Logic tests | ${{ matrix.architecture }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64
+            architecture: x64
+          - platform: Win32
+            architecture: x86
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
+
+      - name: Build portable logic tests
+        shell: pwsh
+        run: |
+          msbuild tests\logic_tests.vcxproj /m /nologo /v:m `
+            /p:Configuration=Release /p:Platform=${{ matrix.platform }}
+          if ($LASTEXITCODE -ne 0) { throw "Logic test build failed with exit code $LASTEXITCODE" }
+
+      - name: Run portable logic tests
+        shell: pwsh
+        run: |
+          & "build\logic-tests\${{ matrix.platform }}\Release\logic_tests.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Logic tests failed with exit code $LASTEXITCODE" }
+
   release:
     name: Create GitHub release
     permissions:
       contents: write
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, logic-tests]
     runs-on: windows-latest
 
     steps:

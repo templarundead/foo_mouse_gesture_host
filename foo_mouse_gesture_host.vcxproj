@@ -127,6 +127,7 @@
     <ClInclude Include="src\gesture_engine.h" />
     <ClInclude Include="src\gesture_recognizer.h" />
     <ClInclude Include="src\gesture_tokens.h" />
+    <ClInclude Include="src\logic_common.h" />
     <ClInclude Include="src\preferences_page.h" />
   </ItemGroup>
   <ItemGroup>

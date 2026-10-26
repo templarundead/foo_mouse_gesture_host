@@ -35,6 +35,9 @@
     <ClInclude Include="src\common.h">
       <Filter>src</Filter>
     </ClInclude>
+    <ClInclude Include="src\component_version.h">
+      <Filter>src</Filter>
+    </ClInclude>
     <ClInclude Include="src\gesture_config.h">
       <Filter>src</Filter>
     </ClInclude>
@@ -45,6 +48,9 @@
       <Filter>src</Filter>
     </ClInclude>
     <ClInclude Include="src\gesture_tokens.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="src\logic_common.h">
       <Filter>src</Filter>
     </ClInclude>
     <ClInclude Include="src\preferences_page.h">
