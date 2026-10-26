@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   # SDK 2023-09-23 - последний официальный SDK эпохи foobar2000 v2.0.
@@ -30,73 +30,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Download foobar2000 SDK
         shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $archive = Join-Path $env:RUNNER_TEMP 'sdk.archive'
-          $extractDir = Join-Path $env:RUNNER_TEMP 'sdk-extracted'
-          $officialUrl = "https://www.foobar2000.org/downloads/$env:SDK_VERSION.7z"
-          $usedMirror = $false
-
-          Write-Host "Downloading $officialUrl"
-          try {
-            Invoke-WebRequest -Uri $officialUrl -OutFile $archive -UseBasicParsing
-          }
-          catch {
-            Write-Warning "Official download failed: $($_.Exception.Message)"
-            Write-Warning "Falling back to the untouched GitHub mirror of the same SDK release."
-            $mirrorUrl = "https://codeload.github.com/reupen/foobar2000-sdk-unmodified/tar.gz/refs/tags/$env:SDK_VERSION"
-            Invoke-WebRequest -Uri $mirrorUrl -OutFile $archive -UseBasicParsing
-            $usedMirror = $true
-          }
-
-          if (Test-Path $extractDir) { Remove-Item $extractDir -Recurse -Force }
-          New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-
-          if ($usedMirror) {
-            tar -xzf $archive -C $extractDir
-            if ($LASTEXITCODE -ne 0) { throw "tar failed with exit code $LASTEXITCODE" }
-          }
-          else {
-            $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
-            if (-not (Test-Path $sevenZip)) {
-              $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
-            }
-            if (-not $sevenZip) {
-              choco install 7zip -y --no-progress | Out-Null
-              $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe'
-            }
-            if (-not (Test-Path $sevenZip)) { throw '7-Zip is not available on the runner.' }
-
-            & $sevenZip x $archive "-o$extractDir" -y | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "7-Zip failed with exit code $LASTEXITCODE" }
-          }
-
-          # Официальный архив может распаковаться как сразу в корень, так и в подпапку -
-          # ищем каталог, в котором лежит foobar2000\SDK\foobar2000.h.
-          $candidates = @(Get-Item $extractDir) + @(Get-ChildItem $extractDir -Directory -Recurse)
-          $sdkRoot = $candidates |
-            Where-Object { Test-Path (Join-Path $_.FullName 'foobar2000\SDK\foobar2000.h') } |
-            Select-Object -First 1
-
-          if (-not $sdkRoot) { throw 'Could not locate the foobar2000 SDK root after extraction.' }
-
-          Write-Host "SDK root: $($sdkRoot.FullName)"
-          New-Item -ItemType Directory -Force -Path sdk | Out-Null
-          Copy-Item -Path (Join-Path $sdkRoot.FullName '*') -Destination sdk -Recurse -Force
-
-          if (-not (Test-Path 'sdk\foobar2000\SDK\foobar2000.h')) { throw 'SDK was not copied correctly.' }
-          Get-ChildItem sdk | Select-Object -ExpandProperty Name
-
-          $source = if ($usedMirror) { 'GitHub mirror (official download failed)' } else { 'foobar2000.org (official)' }
-          Write-Host "::notice title=SDKSource::$env:SDK_VERSION from $source"
+        run: powershell -ExecutionPolicy Bypass -File tools\fetch-sdk.ps1 -Destination sdk -MirrorOnly
 
       - name: Set up MSBuild
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
 
       - name: Build
         shell: pwsh
@@ -131,7 +72,7 @@ jobs:
 
       - name: Upload MSBuild log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: msbuild-log-${{ github.run_number }}-${{ matrix.architecture }}
           path: build.log
@@ -172,21 +113,46 @@ jobs:
           Get-Item $package | Select-Object FullName, Length
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: foo_mouse_gesture_host-${{ github.run_number }}-${{ matrix.architecture }}
           path: dist/*.fb2k-component
           if-no-files-found: error
 
+  sdk-provenance:
+    name: Measure official SDK SHA-256
+    runs-on: windows-latest
+    steps:
+      - name: Download and hash official SDK without using it
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'official-sdk.7z'
+          Invoke-WebRequest -Uri "https://www.foobar2000.org/downloads/$env:SDK_VERSION.7z" `
+            -OutFile $archive -UseBasicParsing
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "SDK_HASH=$hash" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Set-Content -Path sdk-source.txt -Value "$hash  $env:SDK_VERSION.7z" -NoNewline
+          Write-Host "::notice title=OfficialSdkSha256::$hash"
+
+      - name: Publish measured SDK provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: official-sdk-sha256-${{ env.SDK_HASH }}
+          path: sdk-source.txt
+          if-no-files-found: error
+
   release:
     name: Create GitHub release
+    permissions:
+      contents: write
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: windows-latest
 
     steps:
       - name: Download component packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: foo_mouse_gesture_host-${{ github.run_number }}-*
           path: dist
