@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.h"
+#include "binding_index.h"
 #include "gesture_config.h"
 #include "gesture_recognizer.h"
 
@@ -68,7 +69,7 @@ private:
     HHOOK hook_ = nullptr;
     HWND sink_ = nullptr;
 
-    GestureSettings settings_;
+    BindingSnapshotPtr snapshot_ = std::make_shared<BindingSnapshot>(GestureConfig::defaults());
     GestureRecognizer recognizer_;
 
     //! ПКМ зажата над окном foobar2000, и её события подавлены, чтобы хост

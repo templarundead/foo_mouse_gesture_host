@@ -156,7 +156,7 @@ jobs:
       - name: Run portable logic tests
         shell: pwsh
         run: |
-          & "build\logic-tests\${{ matrix.platform }}\Release\logic_tests.exe"
+          & "build\logic-tests\${{ matrix.platform }}\Release\logic_tests.exe" --benchmark
           if ($LASTEXITCODE -ne 0) { throw "Logic tests failed with exit code $LASTEXITCODE" }
 
   release:

@@ -6,6 +6,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\binding_index.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="src\command_catalog.cpp">
       <Filter>src</Filter>
     </ClCompile>
@@ -32,6 +35,9 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\binding_index.h">
+      <Filter>src</Filter>
+    </ClInclude>
     <ClInclude Include="src\command_catalog.h">
       <Filter>src</Filter>
     </ClInclude>

@@ -93,8 +93,8 @@ void GestureEngine::uninstall() {
 }
 
 void GestureEngine::reload() {
-    settings_ = GestureConfig::instance().load_from_storage();
-    recognizer_.set_stroke_length(settings_.stroke_length);
+    snapshot_ = std::make_shared<BindingSnapshot>(GestureConfig::instance().load_from_storage());
+    recognizer_.set_stroke_length(snapshot_->settings().stroke_length);
 }
 
 void GestureEngine::reset_session() {
@@ -111,17 +111,11 @@ void GestureEngine::reset_session() {
 }
 
 bool GestureEngine::has_binding(const std::string& gesture) const {
-    for (const auto& binding : settings_.bindings) {
-        if (binding.gesture == gesture) return true;
-    }
-    return false;
+    return snapshot_->has_binding(gesture);
 }
 
 bool GestureEngine::has_binding_prefix(const std::string& gesture) const {
-    for (const auto& binding : settings_.bindings) {
-        if (binding.gesture.compare(0, gesture.size(), gesture) == 0) return true;
-    }
-    return false;
+    return snapshot_->has_binding_prefix(gesture);
 }
 
 void GestureEngine::queue_gesture(const std::string& gesture) {
@@ -196,23 +190,21 @@ void GestureEngine::drain_queue() {
         const std::string gesture = pending_.front();
         pending_.pop_front();
 
-        // Копируем совпадения: команда может открыть настройки и изменить таблицу
-        // привязок, пока мы по ней идём.
-        std::vector<GestureBinding> matches;
-        for (const auto& binding : settings_.bindings) {
-            if (binding.gesture == gesture) matches.push_back(binding);
-        }
-
+        // Snapshot остаётся неизменным, даже если команда откроет настройки и
+        // вызовет reload: индексы и порядок строк внутри этого прохода согласованы.
+        const BindingSnapshotPtr snapshot = snapshot_;
+        const auto matches = snapshot->exact_matches(gesture);
         for (std::size_t i = 0; i < matches.size(); ++i) {
-            if (i > 0 && settings_.first_only) break;
+            if (i > 0 && snapshot->settings().first_only) break;
 
-            if (!execute_binding(matches[i])) {
-                // Привязка есть, но команда не нашлась (меню переименовали,
+            const GestureBinding& binding = snapshot->settings().bindings[matches[i]];
+            if (!execute_binding(binding)) {
+                // Привязка есть, но команда не найдена (меню переименовали,
                 // компонент не загрузился) - иначе это выглядит как
                 // "жест не работает".
                 FB2K_console_formatter()
                     << "Mouse Gesture Host: gesture \"" << gesture.c_str()
-                    << "\" matched, but command \"" << matches[i].command_path.c_str()
+                    << "\" matched, but command \"" << binding.command_path.c_str()
                     << "\" was not found";
             }
         }
@@ -220,7 +212,7 @@ void GestureEngine::drain_queue() {
 }
 
 bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
-    if (settings_.disabled) return false;
+    if (snapshot_->settings().disabled) return false;
 
     // Свои же синтезированные события не перехватываем - иначе правый клик
     // никогда не дойдёт до foobar2000. Игнорируем их только короткое время
@@ -261,7 +253,7 @@ bool GestureEngine::handle(WPARAM msg, const MSLLHOOKSTRUCT& info) {
         right_moved_ = false;
         wheel_accum_ = 0;
 
-        recognizer_.set_stroke_length(settings_.stroke_length);
+        recognizer_.set_stroke_length(snapshot_->settings().stroke_length);
         recognizer_.begin(pt.x, pt.y);
         return true;
     }

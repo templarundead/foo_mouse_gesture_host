@@ -1,7 +1,9 @@
+#include "binding_index.h"
 #include "gesture_config.h"
 #include "gesture_recognizer.h"
 #include "gesture_tokens.h"
 
+#include <chrono>
 #include <iostream>
 #include <set>
 
@@ -316,20 +318,161 @@ void test_config_corruption_and_duplicates() {
     CHECK_TRUE(std::string(mgh::place_label("not a place")) == "unknown place");
 }
 
+std::vector<mgh::GestureBinding> make_benchmark_bindings(std::size_t count) {
+    std::vector<mgh::GestureBinding> bindings;
+    bindings.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        std::vector<mgh::Token> tokens;
+        std::size_t value = i;
+        do {
+            tokens.push_back(kTokens[value % 12].token);
+            value /= 12;
+        } while (value != 0);
+        bindings.emplace_back(mgh::join_tokens(tokens), "main", "Command/" + std::to_string(i),
+                              "main_window");
+    }
+    return bindings;
+}
+
+bool linear_has_prefix(const std::vector<mgh::GestureBinding>& bindings, std::string_view prefix) {
+    for (const auto& binding : bindings) {
+        if (std::string_view(binding.gesture).substr(0, prefix.size()) == prefix) return true;
+    }
+    return false;
+}
+
+void test_binding_index_differential() {
+    mgh::GestureSettings settings;
+    settings.bindings = make_benchmark_bindings(150);
+    settings.bindings.emplace_back(settings.bindings[3].gesture, "main", "Duplicate gesture/other row",
+                                   "main_window");
+    mgh::BindingSnapshot snapshot(settings);
+
+    std::vector<std::string> probes = { "", "missing", "U X", "\xE2\x9C\x93" };
+    for (const auto& binding : settings.bindings) {
+        probes.push_back(binding.gesture);
+        for (std::size_t length = 0; length <= binding.gesture.size(); ++length) {
+            probes.push_back(binding.gesture.substr(0, length));
+        }
+    }
+
+    for (const std::string& probe : probes) {
+        std::vector<std::size_t> expected;
+        for (std::size_t i = 0; i < settings.bindings.size(); ++i) {
+            if (settings.bindings[i].gesture == probe) expected.push_back(i);
+        }
+        const auto actual = snapshot.exact_matches(probe);
+        CHECK_TRUE(actual.size() == expected.size());
+        CHECK_TRUE(std::equal(actual.begin(), actual.end(), expected.begin(), expected.end()));
+        CHECK_TRUE(snapshot.has_binding(probe) == !expected.empty());
+        CHECK_TRUE(snapshot.has_binding_prefix(probe) == linear_has_prefix(settings.bindings, probe));
+    }
+
+    mgh::GestureSettings wheel_settings;
+    wheel_settings.bindings = {
+        { "WU", "main", "WU", "main_window" },
+        { "WD", "main", "WD", "main_window" },
+        { "WU WU", "main", "WU WU", "main_window" },
+        { "WU WD R", "main", "WU WD R", "main_window" },
+        { "WD WD WD", "main", "WD WD WD", "main_window" },
+        { "R", "main", "R", "main_window" },
+    };
+    const mgh::BindingSnapshot wheel_snapshot(wheel_settings);
+    std::vector<mgh::WheelSequenceKey> level{ 0 };
+    for (std::size_t length = 1; length <= 6; ++length) {
+        std::vector<mgh::WheelSequenceKey> next;
+        for (const auto base : level) {
+            for (const bool up : { false, true }) {
+                const auto key = mgh::append_wheel_sequence(base, up);
+                next.push_back(key);
+                std::vector<mgh::Token> tokens;
+                for (std::size_t i = 0; i < length; ++i) {
+                    const bool down = (static_cast<std::uint32_t>(key) & (std::uint32_t{1} << i)) != 0;
+                    tokens.push_back(down ? mgh::Token::wheel_down : mgh::Token::wheel_up);
+                }
+                const std::string gesture = mgh::join_tokens(tokens);
+                const auto match = wheel_snapshot.wheel_match(key);
+                bool exact = false;
+                for (const auto& binding : wheel_settings.bindings) {
+                    if (binding.gesture == gesture) exact = true;
+                }
+                CHECK_TRUE(match.exact == exact);
+                CHECK_TRUE(match.prefix == linear_has_prefix(wheel_settings.bindings, gesture));
+            }
+        }
+        level = std::move(next);
+    }
+
+    mgh::WheelSequenceKey long_sequence = 0;
+    for (std::size_t i = 0; i < 32; ++i) {
+        long_sequence = mgh::append_wheel_sequence(long_sequence, true);
+    }
+    CHECK_TRUE(mgh::wheel_sequence_length(long_sequence) == 32);
+    CHECK_TRUE(mgh::append_wheel_sequence(long_sequence, false) == mgh::kInvalidWheelSequence);
+    CHECK_TRUE(!wheel_snapshot.wheel_match(mgh::kInvalidWheelSequence).prefix);
+}
+
+std::size_t benchmark_sink = 0;
+
+void run_binding_benchmark() {
+    constexpr std::size_t kLookups = 20000;
+    for (const std::size_t count : { std::size_t{100}, std::size_t{1000} }) {
+        mgh::GestureSettings settings;
+        settings.bindings = make_benchmark_bindings(count);
+        const mgh::BindingSnapshot snapshot(settings);
+        std::vector<std::string> probes;
+        probes.reserve(kLookups);
+        for (std::size_t i = 0; i < kLookups; ++i) {
+            probes.push_back(settings.bindings[i % count].gesture);
+        }
+
+        const auto index_begin = std::chrono::steady_clock::now();
+        for (const auto& probe : probes) {
+            benchmark_sink += snapshot.exact_matches(probe).size();
+            benchmark_sink += snapshot.has_binding_prefix(probe) ? 1 : 0;
+        }
+        const auto index_end = std::chrono::steady_clock::now();
+
+        const auto linear_begin = std::chrono::steady_clock::now();
+        for (const auto& probe : probes) {
+            for (const auto& binding : settings.bindings) {
+                if (binding.gesture == probe) ++benchmark_sink;
+                if (std::string_view(binding.gesture).substr(0, probe.size()) == probe) ++benchmark_sink;
+            }
+        }
+        const auto linear_end = std::chrono::steady_clock::now();
+
+        const double index_ns = static_cast<double>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(index_end - index_begin).count()) / kLookups;
+        const double linear_ns = static_cast<double>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(linear_end - linear_begin).count()) / kLookups;
+        std::cout << "Binding benchmark " << count << " rows: indexed " << index_ns
+                  << " ns/lookup, linear " << linear_ns << " ns/lookup (informational)\n";
+    }
+    std::cout << "Benchmark sink: " << benchmark_sink << '\n';
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     test_tokens();
     test_candidate_order();
     test_recognizer_trajectories();
     test_config_roundtrip_and_migration();
     test_config_corruption_and_duplicates();
+    test_binding_index_differential();
 
     if (failures != 0) {
         std::cerr << failures << " logic test assertion(s) failed\n";
         return 1;
     }
     std::cout << "Logic tests passed: 12 tokens, candidate order, "
-              << trajectory_checks << " deterministic trajectories\n";
+              << trajectory_checks << " deterministic trajectories, config and binding index\n";
+    if (argc == 2 && std::string_view(argv[1]) == "--benchmark") {
+        run_binding_benchmark();
+    } else if (argc != 1) {
+        std::cerr << "Usage: logic_tests [--benchmark]\n";
+        return 2;
+    }
     return 0;
 }

@@ -111,6 +111,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\binding_index.cpp" />
     <ClCompile Include="src\command_catalog.cpp" />
     <ClCompile Include="src\gesture_config.cpp" />
     <ClCompile Include="src\gesture_config_serialization.cpp" />
@@ -121,6 +122,7 @@
     <ClCompile Include="src\preferences_page.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\binding_index.h" />
     <ClInclude Include="src\command_catalog.h" />
     <ClInclude Include="src\common.h" />
     <ClInclude Include="src\component_version.h" />

@@ -202,6 +202,7 @@
 ```
 src/
 ├── main.cpp                 инициализация компонента, метаданные, initquit
+├── binding_index.h/.cpp     immutable snapshot, exact/prefix и wheel-индексы
 ├── gesture_tokens.h/.cpp    модель звеньев, разбор/форматирование жестов
 ├── gesture_recognizer.h/.cpp векторный анализ траектории (8 направлений,
 │                            диагонали, цепочки, антидрожание)
@@ -233,6 +234,9 @@ src/
   Apply, malformed rows получают диагностику, полные дубликаты удаляются с
   приоритетом первой строки. Перед новой записью сохраняется последняя валидная
   таблица; intentionally empty отличается от самого первого запуска.
+- **Индексы строятся при reload**, а не в горячем пути: immutable snapshot
+  содержит exact map и отсортированный prefix index. Исполнение получает span
+  номеров строк, поэтому не копирует bindings и сохраняет их исходный порядок.
 
 ---
 
@@ -266,6 +270,18 @@ msbuild foo_mouse_gesture_host.sln /m /p:Configuration=Release /p:Platform=Win32
 
 Можно открыть `foo_mouse_gesture_host.sln` и в Visual Studio — в решении
 настроены конфигурации `Debug` / `Release` для платформ `x64` и `Win32`.
+
+Portable-тесты не требуют SDK или запущенного foobar2000:
+
+```powershell
+msbuild tests\logic_tests.vcxproj /m /p:Configuration=Release /p:Platform=x64
+build\logic-tests\x64\Release\logic_tests.exe --benchmark
+# Для Win32 используйте /p:Platform=Win32 и каталог build\logic-tests\Win32\Release.
+```
+
+`--benchmark` дополнительно измеряет indexed/linear lookup для 100 и 1000
+привязок. Это informational benchmark чистой логики, а не измерение p99
+низкоуровневого callback или доказательство отсутствия аллокаций.
 
 Решение включает в себя проекты SDK (`pfc`, `foobar2000_SDK`,
 `foobar2000_component_client`), поэтому **перед первым открытием .sln**
