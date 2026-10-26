@@ -2,6 +2,7 @@
 
 #include "command_catalog.h"
 #include "gesture_engine.h"
+#include "gesture_list_sort.h"
 
 #include <commctrl.h>
 #include <uxtheme.h>
@@ -97,6 +98,24 @@ std::wstring arrow(const char* utf8) {
     return wide_from_utf8(utf8);
 }
 
+const wchar_t* gesture_category_title(GestureCategory category) {
+    switch (category) {
+    case GestureCategory::wheel_up: return L"Wheel Up";
+    case GestureCategory::wheel_down: return L"Wheel Down";
+    case GestureCategory::rocker: return L"Rocker";
+    default: return L"Gesture";
+    }
+}
+
+const wchar_t* gesture_category_cell_prefix(GestureCategory category) {
+    switch (category) {
+    case GestureCategory::wheel_up: return L"Wheel Up · ";
+    case GestureCategory::wheel_down: return L"Wheel Down · ";
+    case GestureCategory::rocker: return L"Rocker · ";
+    default: return L"Gesture · ";
+    }
+}
+
 BOOL CALLBACK invalidate_child_proc(HWND child, LPARAM) {
     InvalidateRect(child, nullptr, TRUE);
     return TRUE;
@@ -114,18 +133,10 @@ BOOL CALLBACK invalidate_child_proc(HWND child, LPARAM) {
 //  строки остаются невидимыми. Здесь всё рисуется самим контролом, поэтому
 //  вид одинаков в светлой и тёмной теме и не зависит от comctl32.
 
-struct GestureListRow {
-    bool is_header = false;
-    int binding_index = -1;
-    std::wstring header;
-    std::wstring gesture;
-    std::wstring command;
-    std::wstring place;
-};
-
 class GestureListControl {
 public:
     using select_handler = std::function<void(int binding_index)>;
+    using sort_handler = std::function<void()>;
 
     static const wchar_t* class_name() { return L"foo_mouse_gesture_host_list"; }
 
@@ -182,6 +193,13 @@ public:
     }
 
     void set_select_handler(select_handler handler) { on_select_ = std::move(handler); }
+    void set_sort_handler(sort_handler handler) { on_sort_ = std::move(handler); }
+
+    GestureSortState sort_state() const { return sort_state_; }
+    void set_sort_state(GestureSortState state) {
+        sort_state_ = state;
+        invalidate();
+    }
 
     int selected_binding() const {
         if (rows_ == nullptr || selected_ < 0 || selected_ >= static_cast<int>(rows_->size())) return -1;
@@ -191,14 +209,11 @@ public:
     void select_binding(int binding_index) {
         if (rows_ == nullptr) return;
 
-        for (std::size_t i = 0; i < rows_->size(); ++i) {
-            if ((*rows_)[i].binding_index == binding_index) {
-                selected_ = static_cast<int>(i);
-                scroll_to_row(selected_);
-                invalidate();
-                return;
-            }
-        }
+        const int row = gesture_row_for_binding(*rows_, binding_index);
+        if (row < 0) return;
+        selected_ = row;
+        scroll_to_row(selected_);
+        invalidate();
     }
 
     //! Пересчитать прокрутку и перерисовать (после изменения размера/строк).
@@ -380,6 +395,18 @@ private:
         return -1;
     }
 
+    int column_header_at(int x, int y) const {
+        if (y < 0 || y >= column_header_height_) return -1;
+
+        int left = -scroll_x_;
+        for (int column = 0; column < 3; ++column) {
+            const int right = left + columns_[column];
+            if (x >= left && x < right) return column;
+            left = right;
+        }
+        return -1;
+    }
+
     int min_column_width(int column) const {
         switch (column) {
         case 0: return scale(60);
@@ -455,6 +482,7 @@ private:
     int resizing_column_ = -1;
     int resize_anchor_x_ = 0;
     int resize_start_width_ = 0;
+    GestureSortState sort_state_;
 
     COLORREF background_ = RGB(32, 32, 32);
     COLORREF text_ = RGB(230, 230, 230);
@@ -464,6 +492,7 @@ private:
     COLORREF header_background_ = RGB(45, 45, 45);
 
     select_handler on_select_;
+    sort_handler on_sort_;
 };
 
 void GestureListControl::draw_row(HDC dc, const RECT& row_rect, const GestureListRow& row, bool selected) {
@@ -559,13 +588,31 @@ void GestureListControl::draw_column_header(HDC dc, const RECT& client) {
     HGDIOBJ old_font = SelectObject(dc, font_);
 
     const wchar_t* titles[3] = { L"Gesture", L"Command", L"Place" };
+    const int indicator_width = scale(16);
     int left = -scroll_x_;
     for (int column = 0; column < 3; ++column) {
         RECT cell = { left + scale(6), 0,
                       left + columns_[column] - scale(4), column_header_height_ };
         if (cell.right > cell.left && cell.right > 0 && cell.left < client.right) {
-            DrawTextW(dc, titles[column], -1, &cell,
-                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            const GestureSortColumn sort_column = gesture_sort_column_from_index(column);
+            const bool active = sort_state_.column == sort_column;
+            const wchar_t* indicator = L"↕";
+            if (active) {
+                indicator = sort_state_.direction == GestureSortDirection::ascending ? L"▲" : L"▼";
+            }
+
+            RECT text_cell = cell;
+            text_cell.right -= indicator_width;
+            RECT indicator_cell = cell;
+            indicator_cell.left = text_cell.right;
+            if (text_cell.right > text_cell.left) {
+                SetTextColor(dc, text_);
+                DrawTextW(dc, titles[column], -1, &text_cell,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            }
+            SetTextColor(dc, active ? text_ : muted_);
+            DrawTextW(dc, indicator, -1, &indicator_cell,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
         left += columns_[column];
     }
@@ -672,6 +719,10 @@ LRESULT GestureListControl::window_proc(UINT msg, WPARAM wparam, LPARAM lparam) 
                 SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
                 return TRUE;
             }
+            if (column_header_at(point.x, point.y) >= 0) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
         }
         break;
 
@@ -699,6 +750,14 @@ LRESULT GestureListControl::window_proc(UINT msg, WPARAM wparam, LPARAM lparam) 
             resize_start_width_ = columns_[divider];
             SetCapture(hwnd_);
             SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+            return 0;
+        }
+
+        const int column = column_header_at(x, y);
+        if (column >= 0) {
+            sort_state_ = next_gesture_sort_state(sort_state_, gesture_sort_column_from_index(column));
+            if (on_sort_) on_sort_();
+            invalidate();
             return 0;
         }
 
@@ -1174,6 +1233,9 @@ void GesturePreferencesInstance::create_children() {
         list_control_.set_select_handler([this](int binding_index) {
             on_list_selection_changed(binding_index);
             update_buttons();
+        });
+        list_control_.set_sort_handler([this] {
+            refresh_list();
         });
     }
 
@@ -1657,38 +1719,43 @@ void GesturePreferencesInstance::refresh_list() {
     updating_ = true;
 
     const int previous = selected_row();
+    const GestureSortState sort = list_control_.sort_state();
 
-    rows_.clear();
-
-    const wchar_t* previous_group_title = nullptr;
-
+    // Сначала всегда строим плоский manual view. Сортировка получает только его
+    // копию и физически не может изменить порядок исполнения в settings_.bindings.
+    std::vector<GestureListRow> manual_rows;
+    manual_rows.reserve(settings_.bindings.size());
     for (std::size_t i = 0; i < settings_.bindings.size(); ++i) {
         const GestureBinding& binding = settings_.bindings[i];
-
-        // Категория жеста: так же, как группы ListView в эталоне.
-        const wchar_t* group_title = L"Gesture";
-        switch (categorize_gesture(binding.gesture)) {
-        case GestureCategory::wheel_up: group_title = L"Wheel Up"; break;
-        case GestureCategory::wheel_down: group_title = L"Wheel Down"; break;
-        case GestureCategory::rocker: group_title = L"Rocker"; break;
-        default: group_title = L"Gesture"; break;
-        }
-
-        // Заголовок группы - отдельная (не выбираемая) строка таблицы.
-        if (previous_group_title == nullptr || wcscmp(previous_group_title, group_title) != 0) {
-            GestureListRow header;
-            header.is_header = true;
-            header.header = group_title;
-            rows_.push_back(std::move(header));
-            previous_group_title = group_title;
-        }
-
         GestureListRow row;
         row.binding_index = static_cast<int>(i);
         row.gesture = wide_from_utf8(format_gesture(binding.gesture, settings_.alphabet));
         row.command = wide_from_utf8(std::string(group_label(binding.group)) + ": " + binding.command_path);
         row.place = wide_from_utf8(place_label(binding.place));
-        rows_.push_back(std::move(row));
+        prepare_gesture_list_row(row, binding);
+        manual_rows.push_back(std::move(row));
+    }
+
+    rows_.clear();
+    if (sort.column == GestureSortColumn::none) {
+        const wchar_t* previous_group_title = nullptr;
+        rows_.reserve(manual_rows.size() + 4);
+        for (auto& row : manual_rows) {
+            const wchar_t* group_title = gesture_category_title(row.gesture_category);
+            if (previous_group_title == nullptr || wcscmp(previous_group_title, group_title) != 0) {
+                GestureListRow header;
+                header.is_header = true;
+                header.header = group_title;
+                rows_.push_back(std::move(header));
+                previous_group_title = group_title;
+            }
+            rows_.push_back(std::move(row));
+        }
+    } else {
+        rows_ = make_gesture_list_view(manual_rows, sort);
+        for (auto& row : rows_) {
+            row.gesture = std::wstring(gesture_category_cell_prefix(row.gesture_category)) + row.gesture;
+        }
     }
 
     list_control_.set_rows(&rows_);
@@ -1700,7 +1767,18 @@ void GesturePreferencesInstance::refresh_list() {
     updating_ = was_updating;
 
     if (count_label_ != nullptr) {
-        const std::wstring text = L"Bindings: " + std::to_wstring(settings_.bindings.size());
+        std::wstring text = L"Bindings: " + std::to_wstring(settings_.bindings.size()) + L" - ";
+        if (sort.column == GestureSortColumn::none) {
+            text += L"Manual order";
+        } else {
+            switch (sort.column) {
+            case GestureSortColumn::gesture: text += L"Gesture"; break;
+            case GestureSortColumn::command: text += L"Command"; break;
+            case GestureSortColumn::place: text += L"Place"; break;
+            default: break;
+            }
+            text += sort.direction == GestureSortDirection::ascending ? L" ascending" : L" descending";
+        }
         SetWindowTextW(count_label_, text.c_str());
     }
 
@@ -1976,6 +2054,12 @@ void GesturePreferencesInstance::on_move(int delta) {
 
     if (index < 0 || index >= count || target < 0 || target >= count) return;
 
+    if (list_control_.sort_state().column != GestureSortColumn::none) {
+        list_control_.set_sort_state({});
+        refresh_list();
+        select_binding(index);
+    }
+
     std::swap(settings_.bindings[static_cast<std::size_t>(index)],
               settings_.bindings[static_cast<std::size_t>(target)]);
 
@@ -2058,12 +2142,7 @@ int GesturePreferencesInstance::binding_index_from_display(int display_row) cons
 }
 
 int GesturePreferencesInstance::display_row_from_binding_index(int binding_index) const {
-    if (binding_index < 0) return -1;
-
-    for (std::size_t i = 0; i < rows_.size(); ++i) {
-        if (rows_[i].binding_index == binding_index) return static_cast<int>(i);
-    }
-    return -1;
+    return gesture_row_for_binding(rows_, binding_index);
 }
 
 void GesturePreferencesInstance::select_binding(int binding_index) {
