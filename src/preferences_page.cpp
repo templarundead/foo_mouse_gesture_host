@@ -1282,7 +1282,6 @@ fb2k::hwnd_t GesturePreferencesInstance::get_wnd() {
 }
 
 void GesturePreferencesInstance::apply() {
-    service_ptr_t<GesturePreferencesInstance> keep_alive(this);
     if (editor_.dirty) {
         request_editor_action({ EditorActionType::apply });
         return;
@@ -1300,7 +1299,6 @@ void GesturePreferencesInstance::apply() {
 }
 
 void GesturePreferencesInstance::reset() {
-    service_ptr_t<GesturePreferencesInstance> keep_alive(this);
     if (editor_.dirty) {
         request_editor_action({ EditorActionType::reset });
         return;
@@ -3073,11 +3071,6 @@ LRESULT CALLBACK GesturePreferencesInstance::window_proc_static(HWND hwnd, UINT 
 
     auto* self = reinterpret_cast<GesturePreferencesInstance*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     if (self != nullptr) {
-        if (msg == WM_COMMAND) {
-            // Удерживаем service на весь handler с возможным modal loop.
-            service_ptr_t<GesturePreferencesInstance> keep_alive(self);
-            return self->window_proc(msg, wparam, lparam);
-        }
         return self->window_proc(msg, wparam, lparam);
     }
 
