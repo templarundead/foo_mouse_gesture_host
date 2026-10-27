@@ -51,6 +51,9 @@ enum ControlId : int {
     kIdMoveDown,
     kIdSaveDraft,
     kIdDiscardDraft,
+    kIdCommandChooseAnother,
+    kIdCommandRetry,
+    kIdCommandCopyDetails,
     kIdStrokeEdit,
     kIdStrokeSpin,
     kIdDisable,
@@ -1043,6 +1046,9 @@ private:
     void on_group_changed();
     void on_command_changed();
     void on_place_changed();
+    void on_command_choose_another();
+    void on_command_retry();
+    void on_command_copy_details();
     bool on_list_selection_guard(int binding_index);
     void on_list_selection_changed(int index);
     void on_new();
@@ -1088,6 +1094,8 @@ private:
     int scale(int value) const { return MulDiv(value, dpi_, 96); }
     //! Ширина текста в пикселях шрифтом страницы (для расчёта ширины кнопок).
     int text_width(const wchar_t* text) const;
+    int measure_command_status_height(int width) const;
+    std::wstring command_details_text() const;
 
     // --- данные ---
     GestureSettings settings_;
@@ -1122,6 +1130,9 @@ private:
     HWND group_label_ = nullptr;
     HWND command_label_ = nullptr;
     HWND command_status_ = nullptr;
+    HWND command_choose_button_ = nullptr;
+    HWND command_retry_button_ = nullptr;
+    HWND command_copy_button_ = nullptr;
     HWND place_label_ = nullptr;
 
     HWND dir_up_ = nullptr;
@@ -1173,6 +1184,7 @@ private:
     bool notified_editor_busy_ = false;
     bool editor_guard_active_ = false;
     bool draft_bar_shown_ = false;
+    bool command_actions_shown_ = false;
     bool draft_restored_ = false;
     bool draft_restore_detached_ = false;
     bool updating_ = false;
@@ -1422,7 +1434,7 @@ void GesturePreferencesInstance::create_children() {
     gesture_label_ = make_static(L"Gesture", SS_LEFT);
     group_label_ = make_static(L"Group", SS_LEFT);
     command_label_ = make_static(L"Command", SS_LEFT);
-    command_status_ = make_static(L"Select command…", SS_LEFT | SS_ENDELLIPSIS);
+    command_status_ = make_static(L"Select command…", SS_LEFT | SS_NOPREFIX);
     place_label_ = make_static(L"Place", SS_LEFT);
 
     dir_up_ = make_button(arrow("\xE2\x86\x91").c_str(), kIdDirUp);
@@ -1455,6 +1467,13 @@ void GesturePreferencesInstance::create_children() {
     discard_draft_button_ = make_button(L"Discard draft", kIdDiscardDraft);
     ShowWindow(save_draft_button_, SW_HIDE);
     ShowWindow(discard_draft_button_, SW_HIDE);
+
+    command_choose_button_ = make_button(L"Выбрать другую", kIdCommandChooseAnother);
+    command_retry_button_ = make_button(L"Повторить поиск", kIdCommandRetry);
+    command_copy_button_ = make_button(L"Скопировать детали", kIdCommandCopyDetails);
+    ShowWindow(command_choose_button_, SW_HIDE);
+    ShowWindow(command_retry_button_, SW_HIDE);
+    ShowWindow(command_copy_button_, SW_HIDE);
 
     stroke_edit_ = make_edit(kIdStrokeEdit, ES_NUMBER | ES_RIGHT);
     stroke_spin_ = CreateWindowExW(0, UPDOWN_CLASSW, L"",
@@ -1538,7 +1557,10 @@ void GesturePreferencesInstance::create_tooltips() {
     add_tooltip(gesture_edit_, L"Gesture: canonical tokens for the binding being edited.");
     add_tooltip(group_combo_, L"Group: choose a main-menu or context-menu command source.");
     add_tooltip(command_combo_, L"Command: choose the command bound to the gesture.");
-    add_tooltip(command_status_, L"Editor mode, pending action, and command selection status.");
+    add_tooltip(command_status_, L"Full command path, validation reason, and recovery actions; Add/Update stage, Apply commits.");
+    add_tooltip(command_choose_button_, L"Выбрать другую: focus the Command list without changing the binding automatically.");
+    add_tooltip(command_retry_button_, L"Повторить поиск: rebuild the catalog and resolve only the existing command identity.");
+    add_tooltip(command_copy_button_, L"Скопировать детали: copy the full path, reason, and command identity to the clipboard.");
     add_tooltip(place_combo_, L"Place: choose the execution context for the command.");
 
     add_tooltip(new_button_, L"New: clear the editor after resolving any unsaved draft.");
@@ -1664,6 +1686,26 @@ int GesturePreferencesInstance::text_width(const wchar_t* text) const {
     ReleaseDC(hwnd_, dc);
 
     return static_cast<int>(size.cx);
+}
+
+int GesturePreferencesInstance::measure_command_status_height(int width) const {
+    const int minimum = scale(28);
+    if (width <= 0 || hwnd_ == nullptr) return minimum;
+
+    HDC dc = GetDC(hwnd_);
+    if (dc == nullptr) return minimum;
+
+    RECT measured = { 0, 0, width, 0 };
+    HGDIOBJ old_font = SelectObject(dc, font_);
+    const wchar_t* text = command_status_text_.empty() ? L" " : command_status_text_.c_str();
+    const int result = DrawTextW(dc, text, -1, &measured,
+                                 DT_WORDBREAK | DT_CALCRECT | DT_NOPREFIX);
+    SelectObject(dc, old_font);
+    ReleaseDC(hwnd_, dc);
+
+    if (result == 0) return minimum;
+    const int height = measured.bottom + scale(4);
+    return height > minimum ? height : minimum;
 }
 
 void GesturePreferencesInstance::layout() {
@@ -1809,13 +1851,40 @@ void GesturePreferencesInstance::layout() {
         ? draft_rows * control_height + (draft_rows - 1) * gap + scale(8)
         : 0;
 
+    const ButtonSpec command_action_specs[3] = {
+        { command_choose_button_, L"Выбрать другую", 110 },
+        { command_retry_button_, L"Повторить поиск", 110 },
+        { command_copy_button_, L"Скопировать детали", 120 },
+    };
+    int command_action_widths[3] = {};
+    int command_action_row_of[3] = {};
+    int command_action_rows = command_actions_shown_ ? 1 : 0;
+    int command_action_used = 0;
+    for (int i = 0; i < 3; ++i) {
+        const int needed = text_width(command_action_specs[i].text) + 2 * button_padding;
+        command_action_widths[i] = needed > scale(command_action_specs[i].min_width)
+            ? needed
+            : scale(command_action_specs[i].min_width);
+        if (command_action_widths[i] > form_width_early) command_action_widths[i] = form_width_early;
+        if (!command_actions_shown_) continue;
+        if (command_action_used > 0 && command_action_used + command_action_widths[i] > form_width_early) {
+            ++command_action_rows;
+            command_action_used = 0;
+        }
+        command_action_row_of[i] = command_action_rows - 1;
+        command_action_used += command_action_widths[i] + gap;
+    }
+    const int command_actions_height = command_action_rows > 0
+        ? command_action_rows * control_height + (command_action_rows - 1) * gap + scale(4)
+        : 0;
+
     // --- правая колонка: 4 строки формы + command status + кнопки ----------
     const int row_step = control_height + scale(6);
-    const int command_status_height = scale(14);
+    const int command_status_height = measure_command_status_height(form_width_early);
     const int command_status_gap = scale(4);
     const int right_content_height = 4 * row_step + command_status_height + command_status_gap +
-                                     scale(8) + draft_bar_height + button_rows * control_height +
-                                     (button_rows - 1) * gap + scale(6);
+                                     command_actions_height + scale(8) + draft_bar_height +
+                                     button_rows * control_height + (button_rows - 1) * gap + scale(6);
 
     // Возвращаем таблице фактически освобождённую высоту. Если нижнюю область
     // ограничивает левая колонка, её контролы не сжимаются ради формального +hint.
@@ -1955,9 +2024,21 @@ void GesturePreferencesInstance::layout() {
                  SWP_NOZORDER | SWP_NOACTIVATE);
 
     const int command_status_y = lower_top + 3 * row_step;
-    MoveWindow(command_status_, editor_x, command_status_y, editor_width, command_status_height, TRUE);
+    MoveWindow(command_status_, form_x, command_status_y, form_width, command_status_height, TRUE);
 
-    const int place_y = command_status_y + command_status_height + command_status_gap;
+    int place_y = command_status_y + command_status_height + command_status_gap;
+    if (command_actions_shown_) {
+        int action_row_x[3] = {};
+        for (int i = 0; i < command_action_rows; ++i) action_row_x[i] = form_x;
+        for (int i = 0; i < 3; ++i) {
+            const int row = command_action_row_of[i];
+            const int y = place_y + row * (control_height + gap);
+            MoveWindow(command_action_specs[i].hwnd, action_row_x[row], y,
+                       command_action_widths[i], control_height, TRUE);
+            action_row_x[row] += command_action_widths[i] + gap;
+        }
+        place_y += command_actions_height;
+    }
     MoveWindow(place_label_, form_x, place_y + scale(4), label_width, label_height, TRUE);
     SetWindowPos(place_combo_, nullptr, editor_x, place_y, editor_width, scale(160),
                  SWP_NOZORDER | SWP_NOACTIVATE);
@@ -2303,47 +2384,93 @@ void GesturePreferencesInstance::update_command_status() {
     if (command_status_ == nullptr) return;
 
     const auto status = validate_editor_command(current_editor_binding(), catalog_, selected_command_index());
+    const std::wstring reason = status.message.empty()
+        ? L"Command catalog did not provide additional details."
+        : wide_from_utf8(status.message);
     std::wstring detail;
+    std::wstring recovery;
+    bool show_actions = false;
+
     switch (status.state) {
     case GestureEditorCommandState::valid:
-        detail = L"Command selected explicitly.";
+        detail = L"[valid] Command selected explicitly.";
+        recovery = L"Add/Update stages only this binding; Apply commits the whole Preferences page.";
         break;
     case GestureEditorCommandState::unavailable:
-        detail = L"[unavailable] " + wide_from_utf8(status.message);
+        detail = L"[unavailable] " + reason;
+        show_actions = true;
         break;
     case GestureEditorCommandState::conflict:
-        detail = L"[conflict] " + wide_from_utf8(status.message);
+        detail = L"[conflict] " + reason;
+        show_actions = true;
         break;
     case GestureEditorCommandState::none:
         if (catalog_.empty()) {
             detail = current_group_id() == "main"
-                ? L"Select command… — main menu is not available yet."
-                : L"Select command… — no context commands; select tracks first.";
+                ? L"[none] Main menu is not available yet."
+                : L"[none] No context commands; select tracks first.";
+            show_actions = true;
         } else {
-            detail = L"Select command…";
+            detail = L"[none] No command selected.";
+            recovery = L"Select an available command explicitly; Add/Update remain disabled until then.";
         }
         break;
     }
-
-    if (editor_.dirty) {
-        if (pending_action_.type != EditorActionType::none) {
-            detail = std::wstring(L"Unsaved ") + editor_action_label(pending_action_.type) +
-                     L" — resolve the guard; " + detail;
-        } else {
-            detail = L"Unsaved — use Save draft or Discard draft to leave busy; " + detail;
-        }
-    }
-    if (draft_restored_ && editor_.dirty) {
-        detail = draft_restore_detached_
-            ? L"Restored draft; original Edit target changed — review it in New. " + detail
-            : L"Restored unsaved draft from the previous Preferences session. " + detail;
+    if (show_actions) {
+        recovery = L"What to do: use «Выбрать другую» to pick a selectable command or «Повторить поиск». "
+                   L"«Скопировать детали» copies the full diagnostic.";
     }
 
     const wchar_t* mode = L"Idle";
     if (editor_.mode == GestureEditorMode::new_binding) mode = L"New";
     if (editor_.mode == GestureEditorMode::edit) mode = L"Edit";
-    command_status_text_ = std::wstring(mode) + (editor_.dirty ? L" * — " : L" — ") + detail;
-    SetWindowTextW(command_status_, command_status_text_.c_str());
+    const std::wstring path = editor_.draft.command_path.empty()
+        ? L"(no command selected)"
+        : wide_from_utf8(editor_.draft.command_path);
+    std::wstring text = std::wstring(mode) + (editor_.dirty ? L" *" : L"") +
+                        L"\r\nCommand: " + path + L"\r\n" + detail + L"\r\n" + recovery;
+
+    if (editor_.dirty) {
+        text += L"\r\nDraft: ";
+        if (pending_action_.type != EditorActionType::none) {
+            text += std::wstring(L"pending ") + editor_action_label(pending_action_.type) +
+                    L"; resolve the guard.";
+        } else {
+            text += L"unsaved; Save draft or Discard draft leaves the busy state.";
+        }
+    }
+    if (draft_restored_ && editor_.dirty) {
+        text += draft_restore_detached_
+            ? L"\r\nSession: restored draft; original Edit target changed, so it is detached in New."
+            : L"\r\nSession: restored unsaved draft from the previous Preferences page.";
+    }
+
+    bool layout_needed = false;
+    if (text != command_status_text_) {
+        command_status_text_ = std::move(text);
+        SetWindowTextW(command_status_, command_status_text_.c_str());
+        layout_needed = true;
+    }
+
+    if (show_actions != command_actions_shown_) {
+        command_actions_shown_ = show_actions;
+        const int show = command_actions_shown_ ? SW_SHOW : SW_HIDE;
+        ShowWindow(command_choose_button_, show);
+        ShowWindow(command_retry_button_, show);
+        ShowWindow(command_copy_button_, show);
+        layout_needed = true;
+    }
+
+    bool has_selectable = false;
+    for (const auto& entry : catalog_) {
+        if (entry.selectable) {
+            has_selectable = true;
+            break;
+        }
+    }
+    EnableWindow(command_choose_button_, command_actions_shown_ && has_selectable);
+    EnableWindow(command_retry_button_, command_actions_shown_);
+    EnableWindow(command_copy_button_, command_actions_shown_);
 
     if (tooltip_ != nullptr) {
         TOOLINFOW tool = {};
@@ -2354,6 +2481,8 @@ void GesturePreferencesInstance::update_command_status() {
         tool.lpszText = const_cast<wchar_t*>(command_status_text_.c_str());
         SendMessageW(tooltip_, TTM_UPDATETIPTEXT, 0, reinterpret_cast<LPARAM>(&tool));
     }
+
+    if (layout_needed) layout();
 }
 
 // ---------------------------------------------------------------------------
@@ -2502,6 +2631,73 @@ void GesturePreferencesInstance::on_place_changed() {
     if (updating_) return;
     editor_.draft.place = current_place_id();
     on_editor_changed();
+}
+
+void GesturePreferencesInstance::on_command_choose_another() {
+    if (!IsWindowEnabled(command_choose_button_) || command_combo_ == nullptr) return;
+    SetFocus(command_combo_);
+    ComboBox_ShowDropdown(command_combo_, TRUE);
+}
+
+void GesturePreferencesInstance::on_command_retry() {
+    if (updating_ || !IsWindowEnabled(command_retry_button_)) return;
+
+    // Sync разрешает только identity из draft. При пустом draft CurSel остаётся
+    // -1; retry никогда не превращается в неявный выбор первой команды.
+    sync_editor_controls();
+    const auto status = validate_editor_command(current_editor_binding(), catalog_, selected_command_index());
+    FB2K_console_formatter() << "Mouse Gesture Host: command search retried in group \""
+                             << current_group_id().c_str() << "\", commands="
+                             << static_cast<t_size>(catalog_.size()) << ", state="
+                             << static_cast<int>(status.state);
+}
+
+std::wstring GesturePreferencesInstance::command_details_text() const {
+    const auto value_or_none = [](const std::string& value) {
+        return value.empty() ? std::wstring(L"(none)") : wide_from_utf8(value);
+    };
+
+    std::wstring details = L"Mouse Gesture Host command diagnostic\r\n";
+    details += L"Gesture: " + value_or_none(editor_.draft.gesture) + L"\r\n";
+    details += L"Group: " + value_or_none(editor_.draft.group) + L"\r\n";
+    details += L"Command path: " + value_or_none(editor_.draft.command_path) + L"\r\n";
+    details += L"Place: " + value_or_none(editor_.draft.place) + L"\r\n";
+    details += L"Command GUID: " + value_or_none(editor_.draft.command_guid) + L"\r\n";
+    details += L"Subcommand GUID: " + value_or_none(editor_.draft.subcommand_guid) + L"\r\n";
+    details += L"Node path: " + value_or_none(editor_.draft.node_path) + L"\r\n";
+    details += L"\r\n" + command_status_text_;
+    return details;
+}
+
+void GesturePreferencesInstance::on_command_copy_details() {
+    if (hwnd_ == nullptr || !IsWindowEnabled(command_copy_button_)) return;
+    const std::wstring details = command_details_text();
+    if (!OpenClipboard(hwnd_)) {
+        FB2K_console_formatter() << "Mouse Gesture Host: could not open clipboard for command details";
+        return;
+    }
+
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (details.size() + 1) * sizeof(wchar_t));
+    bool copied = false;
+    if (memory != nullptr) {
+        auto* destination = static_cast<wchar_t*>(GlobalLock(memory));
+        if (destination != nullptr) {
+            std::wmemcpy(destination, details.c_str(), details.size() + 1);
+            GlobalUnlock(memory);
+            if (EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, memory) != nullptr) {
+                copied = true;
+                memory = nullptr; // Владение передано системному clipboard.
+            }
+        }
+    }
+    CloseClipboard();
+
+    if (memory != nullptr) GlobalFree(memory);
+    if (!copied) {
+        FB2K_console_formatter() << "Mouse Gesture Host: could not copy command details to clipboard";
+        return;
+    }
+    FB2K_console_formatter() << "Mouse Gesture Host: command details copied to clipboard";
 }
 
 bool GesturePreferencesInstance::on_list_selection_guard(int binding_index) {
@@ -3020,6 +3216,9 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
         case kIdGroupCombo: if (code == CBN_SELCHANGE) on_group_changed(); return 0;
         case kIdCommandCombo: if (code == CBN_SELCHANGE) on_command_changed(); return 0;
         case kIdPlaceCombo: if (code == CBN_SELCHANGE) on_place_changed(); return 0;
+        case kIdCommandChooseAnother: if (code == BN_CLICKED) on_command_choose_another(); return 0;
+        case kIdCommandRetry: if (code == BN_CLICKED) on_command_retry(); return 0;
+        case kIdCommandCopyDetails: if (code == BN_CLICKED) on_command_copy_details(); return 0;
 
         case kIdNew: if (code == BN_CLICKED) on_new(); return 0;
         case kIdAdd: if (code == BN_CLICKED) on_add(); return 0;
