@@ -1317,8 +1317,10 @@ void test_bounded_mouse_queue() {
     move.result.action_count = 1;
     move.result.actions[0].kind = mgh::SessionActionKind::move;
     mgh::QueuedMouseEvent critical;
+    critical.right_up_ms = 123456;
+    critical.events_ahead = 1;
     critical.result.action_count = 1;
-    critical.result.actions[0].kind = mgh::SessionActionKind::begin;
+    critical.result.actions[0].kind = mgh::SessionActionKind::finish;
 
     CHECK_TRUE(queue.push(move));
     move.result.actions[0].point.x = 2;
@@ -1338,7 +1340,9 @@ void test_bounded_mouse_queue() {
     CHECK_TRUE(!queue.push(move));
     CHECK_TRUE(queue.dropped() == 3);
     CHECK_TRUE(queue.pop(out));
-    CHECK_TRUE(out.result.actions[0].kind == mgh::SessionActionKind::begin);
+    CHECK_TRUE(out.result.actions[0].kind == mgh::SessionActionKind::finish);
+    CHECK_TRUE(out.right_up_ms == 123456);
+    CHECK_TRUE(out.events_ahead == 1);
 }
 
 void test_hook_health_fake_clock() {

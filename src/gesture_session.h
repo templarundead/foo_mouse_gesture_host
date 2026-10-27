@@ -94,6 +94,8 @@ private:
 
 struct QueuedMouseEvent {
     SessionResult result;
+    std::uint64_t right_up_ms = 0;
+    std::size_t events_ahead = 0;
     bool droppable = false;
 };
 

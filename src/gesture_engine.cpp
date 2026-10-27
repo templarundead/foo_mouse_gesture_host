@@ -16,6 +16,7 @@ constexpr UINT_PTR kHealthTimer = 1;
 constexpr UINT kHealthTimerMs = 1000;
 constexpr std::size_t kMaxPendingCommands = 64;
 constexpr std::size_t kMaxPendingLogs = 32;
+constexpr std::uint64_t kSlowReplayLogMs = 30;
 constexpr ULONG_PTR kOwnMouseMarker = static_cast<ULONG_PTR>(0x4D474853); // 'MGHS'
 
 struct ReloadMessage {
@@ -367,7 +368,17 @@ void GestureEngine::process_mouse_queue() {
     QueuedMouseEvent event;
     while (mouse_queue_.pop(event)) {
         for (std::size_t i = 0; i < event.result.action_count; ++i) {
-            process_action(event.result.actions[i]);
+            const SessionAction& action = event.result.actions[i];
+            if (action.kind == SessionActionKind::finish && event.right_up_ms != 0) {
+                const ReplayLatency latency{
+                    event.right_up_ms,
+                    GetTickCount64(),
+                    event.events_ahead,
+                };
+                process_action(action, &latency);
+            } else {
+                process_action(action);
+            }
         }
     }
     if (reported_mouse_drops_ != mouse_queue_.dropped()) {
@@ -378,7 +389,7 @@ void GestureEngine::process_mouse_queue() {
     }
 }
 
-void GestureEngine::process_action(const SessionAction& action) {
+void GestureEngine::process_action(const SessionAction& action, const ReplayLatency* latency) {
     switch (action.kind) {
     case SessionActionKind::begin:
         recognizer_.set_stroke_length(worker_snapshot_->settings().stroke_length);
@@ -416,7 +427,7 @@ void GestureEngine::process_action(const SessionAction& action) {
     if (!executed && !gesture.empty()) report_unmatched_gesture(gesture);
 
     if (action.was_suppressed && !executed && !action.wheel_used && action.was_tap) {
-        replay_right_click(action.right_down_point);
+        replay_right_click(action.right_down_point, latency);
     }
 }
 
@@ -430,7 +441,8 @@ void GestureEngine::report_unmatched_gesture(const std::string& gesture) {
     post_log("Mouse Gesture Host: gesture \"" + gesture + "\" has no binding");
 }
 
-void GestureEngine::replay_right_click(SessionPoint point) {
+void GestureEngine::replay_right_click(SessionPoint point, const ReplayLatency* latency) {
+    const std::uint64_t replay_started_ms = latency != nullptr ? GetTickCount64() : 0;
     const POINT native_point{ point.x, point.y };
     if (!over_main_window(main_window_, native_point)) {
         post_log("Mouse Gesture Host: right-click replay cancelled because the saved point left the main window");
@@ -467,7 +479,23 @@ void GestureEngine::replay_right_click(SessionPoint point) {
     inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP | MOUSEEVENTF_MOVE |
                            MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
 
-    if (SendInput(2, inputs, sizeof(INPUT)) != 2) {
+    const std::uint64_t send_started_ms = latency != nullptr ? GetTickCount64() : 0;
+    const UINT sent = SendInput(2, inputs, sizeof(INPUT));
+    if (latency != nullptr) {
+        const std::uint64_t completed_ms = GetTickCount64();
+        const std::uint64_t total_ms = completed_ms - latency->right_up_ms;
+        if (total_ms >= kSlowReplayLogMs) {
+            post_log("Mouse Gesture Host: slow right-click replay: total " +
+                     std::to_string(total_ms) + " ms (queue/moves " +
+                     std::to_string(latency->finish_started_ms - latency->right_up_ms) +
+                     ", finish " + std::to_string(replay_started_ms - latency->finish_started_ms) +
+                     ", prepare " + std::to_string(send_started_ms - replay_started_ms) +
+                     ", SendInput " + std::to_string(completed_ms - send_started_ms) +
+                     "), " + std::to_string(latency->events_ahead) +
+                     " event(s) ahead at right-up");
+        }
+    }
+    if (sent != 2) {
         post_log("Mouse Gesture Host: failed to replay the right click (" +
                  std::to_string(static_cast<unsigned long>(GetLastError())) + ")");
     }
@@ -535,7 +563,8 @@ LRESULT CALLBACK GestureEngine::mouse_hook_proc(int code, WPARAM wparam, LPARAM 
         const auto* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lparam);
         GestureEngine& engine = instance();
         if (info != nullptr && info->dwExtraInfo != kOwnMouseMarker) {
-            engine.health_.note_event(GetTickCount64());
+            const std::uint64_t event_ms = GetTickCount64();
+            engine.health_.note_event(event_ms);
             // Пустые move не накапливаются перед RUp и не будят worker без необходимости.
             if (!engine.worker_snapshot_->settings().disabled &&
                 (wparam != WM_MOUSEMOVE || engine.session_.tracks_mouse_move())) {
@@ -546,6 +575,10 @@ LRESULT CALLBACK GestureEngine::mouse_hook_proc(int code, WPARAM wparam, LPARAM 
                     QueuedMouseEvent queued;
                     queued.result = result;
                     queued.droppable = (wparam == WM_MOUSEMOVE);
+                    if (wparam == WM_RBUTTONUP) {
+                        queued.right_up_ms = event_ms;
+                        queued.events_ahead = engine.mouse_queue_.size();
+                    }
                     if (engine.mouse_queue_.push(queued)) {
                         // У критического события всегда есть собственный wake-up:
                         // RUp не должен ждать health timer из-за старого posted-флага.

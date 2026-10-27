@@ -41,14 +41,20 @@ private:
     bool initialize_worker();
     void cleanup_worker();
 
+    struct ReplayLatency {
+        std::uint64_t right_up_ms = 0;
+        std::uint64_t finish_started_ms = 0;
+        std::size_t events_ahead = 0;
+    };
+
     void process_mouse_queue();
-    void process_action(const SessionAction& action);
+    void process_action(const SessionAction& action, const ReplayLatency* latency = nullptr);
     void queue_gesture(const std::string& gesture);
     void post_log(const std::string& message);
     void drain_main_queue();
     void report_unmatched_gesture(const std::string& gesture);
 
-    void replay_right_click(SessionPoint point);
+    void replay_right_click(SessionPoint point, const ReplayLatency* latency);
     void health_check();
     bool reinstall_hook();
 
