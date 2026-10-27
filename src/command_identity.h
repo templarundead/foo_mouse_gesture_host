@@ -67,8 +67,10 @@ CommandMatch resolve_command(const GestureBinding& binding, const Range& entries
     if (!binding.command_guid.empty()) {
         for (std::size_t i = 0; i < entries.size(); ++i) {
             const auto& entry = entries[i];
-            if (entry.group == binding.group && entry.command_guid == binding.command_guid &&
-                entry.subcommand_guid == binding.subcommand_guid) {
+            // SDK печатает GUID uppercase, а конфигурация хранит lowercase.
+            if (entry.group == binding.group &&
+                iequals_ascii(entry.command_guid, binding.command_guid) &&
+                iequals_ascii(entry.subcommand_guid, binding.subcommand_guid)) {
                 matches.push_back(i);
             }
         }

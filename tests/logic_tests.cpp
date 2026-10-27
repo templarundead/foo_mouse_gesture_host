@@ -380,6 +380,40 @@ void test_command_identity_resolution() {
     CHECK_TRUE(assigned.command_guid == entries[0].command_guid);
     CHECK_TRUE(assigned.subcommand_guid == entries[0].subcommand_guid);
     CHECK_TRUE(assigned.node_path == entries[0].node_path);
+
+    // Полный цикл SDK uppercase -> config lowercase -> SDK uppercase catalog.
+    const mgh::GestureBinding sdk_binding(
+        "WU", "context_ui", "Utilities/Mixed case", "playlist",
+        "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+        "11111111-2222-3333-4444-AAAAAAAAAAAA", "1.2.3");
+    const auto roundtrip = mgh::GestureConfig::deserialize(
+        mgh::GestureConfig::serialize({ sdk_binding }));
+    CHECK_TRUE(roundtrip.valid);
+    CHECK_TRUE(roundtrip.bindings.size() == 1);
+    CHECK_TRUE(roundtrip.bindings[0].command_guid == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    CHECK_TRUE(roundtrip.bindings[0].subcommand_guid == "11111111-2222-3333-4444-aaaaaaaaaaaa");
+
+    mgh::CatalogEntry sdk_entry;
+    sdk_entry.path = sdk_binding.command_path;
+    sdk_entry.group = sdk_binding.group;
+    sdk_entry.command_guid = sdk_binding.command_guid;
+    sdk_entry.subcommand_guid = sdk_binding.subcommand_guid;
+    const std::vector<mgh::CatalogEntry> sdk_catalog = { sdk_entry };
+    match = mgh::resolve_command(roundtrip.bindings[0], sdk_catalog);
+    CHECK_TRUE(match.status == mgh::CommandResolution::found);
+    CHECK_TRUE(match.index == 0);
+
+    auto changed_catalog = sdk_catalog;
+    changed_catalog[0].command_guid = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEF";
+    match = mgh::resolve_command(roundtrip.bindings[0], changed_catalog);
+    CHECK_TRUE(match.status == mgh::CommandResolution::unavailable);
+
+    auto duplicate_catalog = sdk_catalog;
+    duplicate_catalog.push_back(sdk_entry);
+    duplicate_catalog[1].command_guid = roundtrip.bindings[0].command_guid;
+    duplicate_catalog[1].subcommand_guid = roundtrip.bindings[0].subcommand_guid;
+    match = mgh::resolve_command(roundtrip.bindings[0], duplicate_catalog);
+    CHECK_TRUE(match.status == mgh::CommandResolution::ambiguous);
 }
 
 std::vector<mgh::GestureBinding> make_benchmark_bindings(std::size_t count) {
