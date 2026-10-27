@@ -27,9 +27,9 @@ struct ResolvedEntry : CatalogEntry {
 };
 
 struct ResolvedCatalog {
-    std::vector<ResolvedEntry> entries;
-    //! Держим manager живым, пока используются его menu_tree_item.
+    //! Порядок членов важен: entries разрушаются раньше своих manager.
     std::vector<service_ptr> owners;
+    std::vector<ResolvedEntry> entries;
     std::string error;
 };
 
