@@ -14,8 +14,10 @@ constexpr UINT kMsgReload = WM_APP + 0x49;
 constexpr UINT kMsgShutdown = WM_APP + 0x4A;
 constexpr UINT_PTR kHealthTimer = 1;
 constexpr UINT kHealthTimerMs = 1000;
+constexpr std::size_t kMaxPendingReplays = 64;
 constexpr std::size_t kMaxPendingCommands = 64;
 constexpr std::size_t kMaxPendingLogs = 32;
+constexpr std::uint64_t kSlowReplayLogMs = 30;
 constexpr ULONG_PTR kOwnMouseMarker = static_cast<ULONG_PTR>(0x4D474853); // 'MGHS'
 
 struct ReloadMessage {
@@ -167,9 +169,11 @@ void GestureEngine::uninstall() {
     }
 
     std::lock_guard<std::mutex> lock(main_queue_mutex_);
+    pending_replays_.clear();
     pending_commands_.clear();
     pending_logs_.clear();
     main_queue_posted_ = false;
+    dropped_replays_ = 0;
     dropped_commands_ = 0;
     dropped_logs_ = 0;
 }
@@ -259,6 +263,31 @@ void GestureEngine::cleanup_worker() {
     reported_gestures_.clear();
 }
 
+void GestureEngine::request_right_click_replay(SessionPoint point, const ReplayRequest* timing) {
+    ReplayRequest request;
+    if (timing != nullptr) request = *timing;
+    request.point = point;
+    request.queued_ms = GetTickCount64();
+
+    bool post = false;
+    {
+        std::lock_guard<std::mutex> lock(main_queue_mutex_);
+        if (pending_replays_.size() >= kMaxPendingReplays) {
+            ++dropped_replays_;
+        } else {
+            pending_replays_.push_back(request);
+        }
+        if (!main_queue_posted_) {
+            main_queue_posted_ = true;
+            post = true;
+        }
+    }
+    if (post && main_sink_ != nullptr && !PostMessageW(main_sink_, kMsgExecuteGesture, 0, 0)) {
+        std::lock_guard<std::mutex> lock(main_queue_mutex_);
+        main_queue_posted_ = false;
+    }
+}
+
 void GestureEngine::queue_gesture(const std::string& gesture) {
     bool post = false;
     {
@@ -301,15 +330,22 @@ void GestureEngine::post_log(const std::string& message) {
 
 void GestureEngine::drain_main_queue() {
     for (;;) {
+        ReplayRequest replay;
         GestureCommandRequest command;
         std::string log;
+        bool have_replay = false;
         bool have_command = false;
         bool have_log = false;
+        std::uint64_t dropped_replays = 0;
         std::uint64_t dropped_commands = 0;
         std::uint64_t dropped_logs = 0;
         {
             std::lock_guard<std::mutex> lock(main_queue_mutex_);
-            if (!pending_commands_.empty()) {
+            if (!pending_replays_.empty()) {
+                replay = std::move(pending_replays_.front());
+                pending_replays_.pop_front();
+                have_replay = true;
+            } else if (!pending_commands_.empty()) {
                 command = std::move(pending_commands_.front());
                 pending_commands_.pop_front();
                 have_command = true;
@@ -318,14 +354,20 @@ void GestureEngine::drain_main_queue() {
                 pending_logs_.pop_front();
                 have_log = true;
             } else {
+                dropped_replays = dropped_replays_;
                 dropped_commands = dropped_commands_;
                 dropped_logs = dropped_logs_;
+                dropped_replays_ = 0;
                 dropped_commands_ = 0;
                 dropped_logs_ = 0;
                 main_queue_posted_ = false;
             }
         }
 
+        if (have_replay) {
+            replay_right_click(replay);
+            continue;
+        }
         if (have_log) {
             FB2K_console_formatter() << log.c_str();
             continue;
@@ -347,6 +389,11 @@ void GestureEngine::drain_main_queue() {
             continue;
         }
 
+        if (dropped_replays != 0) {
+            FB2K_console_formatter() << "Mouse Gesture Host: dropped "
+                                     << static_cast<t_size>(dropped_replays)
+                                     << " queued right-click replay(s) because the main-thread queue was full";
+        }
         if (dropped_commands != 0) {
             FB2K_console_formatter() << "Mouse Gesture Host: dropped "
                                      << static_cast<t_size>(dropped_commands)
@@ -361,10 +408,22 @@ void GestureEngine::drain_main_queue() {
 }
 
 void GestureEngine::process_mouse_queue() {
+    // Разрешаем следующему событию поставить wake-up уже во время drain.
+    mouse_process_posted_ = false;
+
     QueuedMouseEvent event;
     while (mouse_queue_.pop(event)) {
         for (std::size_t i = 0; i < event.result.action_count; ++i) {
-            process_action(event.result.actions[i]);
+            const SessionAction& action = event.result.actions[i];
+            if (action.kind == SessionActionKind::finish && event.right_up_ms != 0) {
+                ReplayRequest timing;
+                timing.right_up_ms = event.right_up_ms;
+                timing.finish_started_ms = GetTickCount64();
+                timing.events_ahead = event.events_ahead;
+                process_action(action, &timing);
+            } else {
+                process_action(action);
+            }
         }
     }
     if (reported_mouse_drops_ != mouse_queue_.dropped()) {
@@ -373,10 +432,9 @@ void GestureEngine::process_mouse_queue() {
         post_log("Mouse Gesture Host: dropped " + std::to_string(delta) +
                  " low-level mouse event(s); total " + std::to_string(reported_mouse_drops_));
     }
-    mouse_process_posted_ = false;
 }
 
-void GestureEngine::process_action(const SessionAction& action) {
+void GestureEngine::process_action(const SessionAction& action, const ReplayRequest* timing) {
     switch (action.kind) {
     case SessionActionKind::begin:
         recognizer_.set_stroke_length(worker_snapshot_->settings().stroke_length);
@@ -414,7 +472,7 @@ void GestureEngine::process_action(const SessionAction& action) {
     if (!executed && !gesture.empty()) report_unmatched_gesture(gesture);
 
     if (action.was_suppressed && !executed && !action.wheel_used && action.was_tap) {
-        replay_right_click(action.right_down_point);
+        request_right_click_replay(action.right_down_point, timing);
     }
 }
 
@@ -428,7 +486,11 @@ void GestureEngine::report_unmatched_gesture(const std::string& gesture) {
     post_log("Mouse Gesture Host: gesture \"" + gesture + "\" has no binding");
 }
 
-void GestureEngine::replay_right_click(SessionPoint point) {
+void GestureEngine::replay_right_click(const ReplayRequest& request) {
+    // SendInput выполняется на main thread: worker остаётся свободным для synthetic hook events.
+    const bool timed = request.right_up_ms != 0;
+    const std::uint64_t replay_started_ms = timed ? GetTickCount64() : 0;
+    const SessionPoint point = request.point;
     const POINT native_point{ point.x, point.y };
     if (!over_main_window(main_window_, native_point)) {
         post_log("Mouse Gesture Host: right-click replay cancelled because the saved point left the main window");
@@ -465,7 +527,24 @@ void GestureEngine::replay_right_click(SessionPoint point) {
     inputs[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP | MOUSEEVENTF_MOVE |
                            MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
 
-    if (SendInput(2, inputs, sizeof(INPUT)) != 2) {
+    const std::uint64_t send_started_ms = timed ? GetTickCount64() : 0;
+    const UINT sent = SendInput(2, inputs, sizeof(INPUT));
+    if (timed) {
+        const std::uint64_t completed_ms = GetTickCount64();
+        const std::uint64_t total_ms = completed_ms - request.right_up_ms;
+        if (total_ms >= kSlowReplayLogMs) {
+            post_log("Mouse Gesture Host: slow right-click replay: total " +
+                     std::to_string(total_ms) + " ms (queue/moves " +
+                     std::to_string(request.finish_started_ms - request.right_up_ms) +
+                     ", finish " + std::to_string(request.queued_ms - request.finish_started_ms) +
+                     ", main queue " + std::to_string(replay_started_ms - request.queued_ms) +
+                     ", prepare " + std::to_string(send_started_ms - replay_started_ms) +
+                     ", SendInput " + std::to_string(completed_ms - send_started_ms) +
+                     "), " + std::to_string(request.events_ahead) +
+                     " event(s) ahead at right-up");
+        }
+    }
+    if (sent != 2) {
         post_log("Mouse Gesture Host: failed to replay the right click (" +
                  std::to_string(static_cast<unsigned long>(GetLastError())) + ")");
     }
@@ -476,7 +555,7 @@ void GestureEngine::health_check() {
 
     const bool left_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
     const bool right_down = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-    SessionResult reconciled = session_.reconcile_buttons(left_down, right_down, *worker_snapshot_);
+    SessionResult reconciled = session_.reconcile_left_button(left_down, *worker_snapshot_);
     for (std::size_t i = 0; i < reconciled.action_count; ++i) {
         process_action(reconciled.actions[i]);
     }
@@ -533,8 +612,11 @@ LRESULT CALLBACK GestureEngine::mouse_hook_proc(int code, WPARAM wparam, LPARAM 
         const auto* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lparam);
         GestureEngine& engine = instance();
         if (info != nullptr && info->dwExtraInfo != kOwnMouseMarker) {
-            engine.health_.note_event(GetTickCount64());
-            if (!engine.worker_snapshot_->settings().disabled) {
+            const std::uint64_t event_ms = GetTickCount64();
+            engine.health_.note_event(event_ms);
+            // Пустые move не накапливаются перед RUp и не будят worker без необходимости.
+            if (!engine.worker_snapshot_->settings().disabled &&
+                (wparam != WM_MOUSEMOVE || engine.session_.tracks_mouse_move())) {
                 SessionEvent event;
                 if (make_session_event(wparam, *info, engine.main_window_, event)) {
                     const GestureSession previous = engine.session_;
@@ -542,10 +624,20 @@ LRESULT CALLBACK GestureEngine::mouse_hook_proc(int code, WPARAM wparam, LPARAM 
                     QueuedMouseEvent queued;
                     queued.result = result;
                     queued.droppable = (wparam == WM_MOUSEMOVE);
+                    if (wparam == WM_RBUTTONUP) {
+                        queued.right_up_ms = event_ms;
+                        queued.events_ahead = engine.mouse_queue_.size();
+                    }
                     if (engine.mouse_queue_.push(queued)) {
-                        if (!engine.mouse_process_posted_ &&
-                            PostMessageW(engine.worker_sink_, kMsgProcessMouse, 0, 0)) {
-                            engine.mouse_process_posted_ = true;
+                        // У критического события всегда есть собственный wake-up:
+                        // RUp не должен ждать health timer из-за старого posted-флага.
+                        const bool needs_wakeup = !queued.droppable || !engine.mouse_process_posted_;
+                        if (needs_wakeup) {
+                            if (PostMessageW(engine.worker_sink_, kMsgProcessMouse, 0, 0)) {
+                                engine.mouse_process_posted_ = true;
+                            } else {
+                                engine.mouse_process_posted_ = false;
+                            }
                         }
                         if (result.swallow) return 1;
                     } else if (!queued.droppable) {

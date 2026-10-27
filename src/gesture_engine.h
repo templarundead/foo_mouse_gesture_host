@@ -41,14 +41,23 @@ private:
     bool initialize_worker();
     void cleanup_worker();
 
+    struct ReplayRequest {
+        SessionPoint point;
+        std::uint64_t right_up_ms = 0;
+        std::uint64_t finish_started_ms = 0;
+        std::size_t events_ahead = 0;
+        std::uint64_t queued_ms = 0;
+    };
+
     void process_mouse_queue();
-    void process_action(const SessionAction& action);
+    void process_action(const SessionAction& action, const ReplayRequest* timing = nullptr);
+    void request_right_click_replay(SessionPoint point, const ReplayRequest* timing);
     void queue_gesture(const std::string& gesture);
     void post_log(const std::string& message);
     void drain_main_queue();
     void report_unmatched_gesture(const std::string& gesture);
 
-    void replay_right_click(SessionPoint point);
+    void replay_right_click(const ReplayRequest& request);
     void health_check();
     bool reinstall_hook();
 
@@ -65,9 +74,11 @@ private:
 
     // Ограниченный cross-thread канал. SDK console вызывается после pop на main thread.
     std::mutex main_queue_mutex_;
+    std::deque<ReplayRequest> pending_replays_;
     std::deque<GestureCommandRequest> pending_commands_;
     std::deque<std::string> pending_logs_;
     bool main_queue_posted_ = false;
+    std::uint64_t dropped_replays_ = 0;
     std::uint64_t dropped_commands_ = 0;
     std::uint64_t dropped_logs_ = 0;
 

@@ -273,8 +273,8 @@ void test_config_roundtrip_and_migration() {
     const std::vector<GestureBinding> expected_defaults = {
         { "L", "main", "Playback/Previous", "main_window" },
         { "R", "main", "Playback/Next", "main_window" },
-        { "U", "main", "Playback/Volume up", "main_window" },
-        { "D", "main", "Playback/Volume down", "main_window" },
+        { "U", "main", "Playback/Volume/Up", "main_window" },
+        { "D", "main", "Playback/Volume/Down", "main_window" },
     };
     CHECK_TRUE(defaults.bindings == expected_defaults);
 }
@@ -350,6 +350,21 @@ void test_command_identity_resolution() {
     binding.command_path = "Playback/Wrong label";
     match = mgh::resolve_command(binding, entries);
     CHECK_TRUE(match.status == mgh::CommandResolution::unavailable);
+    CHECK_TRUE(match.message == "structural key now points to a different command label");
+
+    // Динамическое меню переместило нужную команду, а старую позицию занял другой пункт.
+    auto moved_entries = entries;
+    std::swap(moved_entries[0].node_path, moved_entries[1].node_path);
+    binding = mgh::GestureBinding("WU", "main", "Playback/Renamed", "main_window", "", "", "0.1");
+    match = mgh::resolve_command(binding, moved_entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::found);
+    CHECK_TRUE(match.index == 0);
+
+    // Исчезнувшая старая позиция также не делает существующий полный путь unavailable.
+    binding.node_path = "9.9";
+    match = mgh::resolve_command(binding, moved_entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::found);
+    CHECK_TRUE(match.index == 0);
 
     binding = mgh::GestureBinding("R", "main", "Playback/Renamed", "main_window");
     match = mgh::resolve_command(binding, entries);
@@ -363,6 +378,15 @@ void test_command_identity_resolution() {
     entries[1].command_guid.clear();
     entries[0].command_guid.clear();
     binding = mgh::GestureBinding("R", "main", entries[0].path, "main_window");
+    match = mgh::resolve_command(binding, entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::ambiguous);
+
+    // node_path разрешает дубликат полного пути, но не скрывает конфликт при устаревании.
+    binding.node_path = entries[1].node_path;
+    match = mgh::resolve_command(binding, entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::found);
+    CHECK_TRUE(match.index == 1);
+    binding.node_path = "9.9";
     match = mgh::resolve_command(binding, entries);
     CHECK_TRUE(match.status == mgh::CommandResolution::ambiguous);
 
@@ -380,6 +404,40 @@ void test_command_identity_resolution() {
     CHECK_TRUE(assigned.command_guid == entries[0].command_guid);
     CHECK_TRUE(assigned.subcommand_guid == entries[0].subcommand_guid);
     CHECK_TRUE(assigned.node_path == entries[0].node_path);
+
+    // Полный цикл SDK uppercase -> config lowercase -> SDK uppercase catalog.
+    const mgh::GestureBinding sdk_binding(
+        "WU", "context_ui", "Utilities/Mixed case", "playlist",
+        "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE",
+        "11111111-2222-3333-4444-AAAAAAAAAAAA", "1.2.3");
+    const auto roundtrip = mgh::GestureConfig::deserialize(
+        mgh::GestureConfig::serialize({ sdk_binding }));
+    CHECK_TRUE(roundtrip.valid);
+    CHECK_TRUE(roundtrip.bindings.size() == 1);
+    CHECK_TRUE(roundtrip.bindings[0].command_guid == "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+    CHECK_TRUE(roundtrip.bindings[0].subcommand_guid == "11111111-2222-3333-4444-aaaaaaaaaaaa");
+
+    mgh::CatalogEntry sdk_entry;
+    sdk_entry.path = sdk_binding.command_path;
+    sdk_entry.group = sdk_binding.group;
+    sdk_entry.command_guid = sdk_binding.command_guid;
+    sdk_entry.subcommand_guid = sdk_binding.subcommand_guid;
+    const std::vector<mgh::CatalogEntry> sdk_catalog = { sdk_entry };
+    match = mgh::resolve_command(roundtrip.bindings[0], sdk_catalog);
+    CHECK_TRUE(match.status == mgh::CommandResolution::found);
+    CHECK_TRUE(match.index == 0);
+
+    auto changed_catalog = sdk_catalog;
+    changed_catalog[0].command_guid = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEF";
+    match = mgh::resolve_command(roundtrip.bindings[0], changed_catalog);
+    CHECK_TRUE(match.status == mgh::CommandResolution::unavailable);
+
+    auto duplicate_catalog = sdk_catalog;
+    duplicate_catalog.push_back(sdk_entry);
+    duplicate_catalog[1].command_guid = roundtrip.bindings[0].command_guid;
+    duplicate_catalog[1].subcommand_guid = roundtrip.bindings[0].subcommand_guid;
+    match = mgh::resolve_command(roundtrip.bindings[0], duplicate_catalog);
+    CHECK_TRUE(match.status == mgh::CommandResolution::ambiguous);
 }
 
 std::vector<mgh::GestureBinding> make_benchmark_bindings(std::size_t count) {
@@ -1125,17 +1183,25 @@ void test_session_idle_drag_and_reconcile() {
     const auto bindings = make_session_snapshot({});
     mgh::GestureSession session;
     CHECK_TRUE(session.state() == mgh::GestureSessionState::idle);
+    CHECK_TRUE(!session.tracks_mouse_move());
 
-    auto result = session.handle_event(session_event(mgh::SessionEventKind::right_down, 100, 100, false), bindings);
+    auto result = session.handle_event(session_event(mgh::SessionEventKind::mouse_move), bindings);
+    CHECK_TRUE(!result.swallow);
+    CHECK_TRUE(result.action_count == 0);
+    CHECK_TRUE(!session.tracks_mouse_move());
+
+    result = session.handle_event(session_event(mgh::SessionEventKind::right_down, 100, 100, false), bindings);
     CHECK_TRUE(!result.swallow);
     CHECK_TRUE(result.action_count == 0);
     CHECK_TRUE(session.state() == mgh::GestureSessionState::idle);
+    CHECK_TRUE(!session.tracks_mouse_move());
 
     result = session.handle_event(session_event(mgh::SessionEventKind::right_down), bindings);
     CHECK_TRUE(result.swallow);
     CHECK_TRUE(result.action_count == 1);
     CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::begin);
     CHECK_TRUE(session.state() == mgh::GestureSessionState::right_down);
+    CHECK_TRUE(session.tracks_mouse_move());
 
     result = session.handle_event(session_event(mgh::SessionEventKind::mouse_move, 102, 100), bindings);
     CHECK_TRUE(!result.swallow);
@@ -1151,6 +1217,7 @@ void test_session_idle_drag_and_reconcile() {
     CHECK_TRUE(result.actions[0].was_suppressed);
     CHECK_TRUE(result.actions[0].right_down_point.x == 100);
     CHECK_TRUE(session.state() == mgh::GestureSessionState::idle);
+    CHECK_TRUE(!session.tracks_mouse_move());
 
     session.handle_event(session_event(mgh::SessionEventKind::right_down), bindings);
     session.handle_event(session_event(mgh::SessionEventKind::mouse_move, 140, 100), bindings);
@@ -1159,10 +1226,11 @@ void test_session_idle_drag_and_reconcile() {
     CHECK_TRUE(!result.actions[0].was_tap);
 
     session.handle_event(session_event(mgh::SessionEventKind::right_down), bindings);
-    result = session.reconcile_buttons(false, false, bindings);
-    CHECK_TRUE(result.action_count == 1);
-    CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::finish);
-    CHECK_TRUE(session.state() == mgh::GestureSessionState::idle);
+    result = session.reconcile_left_button(false, bindings);
+    CHECK_TRUE(result.action_count == 0);
+    CHECK_TRUE(session.state() == mgh::GestureSessionState::right_down);
+    session.reset();
+    CHECK_TRUE(!session.tracks_mouse_move());
 }
 
 void test_session_rocker() {
@@ -1172,13 +1240,16 @@ void test_session_rocker() {
     auto result = session.handle_event(session_event(mgh::SessionEventKind::left_down, 110, 100), bindings);
     CHECK_TRUE(result.swallow);
     CHECK_TRUE(session.state() == mgh::GestureSessionState::rocker_right_left);
+    CHECK_TRUE(!session.tracks_mouse_move());
     result = session.handle_event(session_event(mgh::SessionEventKind::left_up, 110, 100), bindings);
     CHECK_TRUE(result.swallow);
     CHECK_TRUE(result.action_count == 1);
     CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::emit_rocker);
     CHECK_TRUE(result.actions[0].rocker_token == mgh::Token::rocker_right_left);
+    CHECK_TRUE(session.tracks_mouse_move());
     result = session.handle_event(session_event(mgh::SessionEventKind::right_up), bindings);
     CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::finish);
+    CHECK_TRUE(!session.tracks_mouse_move());
 
     session.reset();
     result = session.handle_event(session_event(mgh::SessionEventKind::left_down), bindings);
@@ -1187,6 +1258,7 @@ void test_session_rocker() {
     CHECK_TRUE(result.swallow);
     CHECK_TRUE(result.action_count == 0);
     CHECK_TRUE(session.state() == mgh::GestureSessionState::rocker_left_right);
+    CHECK_TRUE(!session.tracks_mouse_move());
     result = session.handle_event(session_event(mgh::SessionEventKind::right_up), bindings);
     CHECK_TRUE(result.swallow);
     CHECK_TRUE(result.action_count == 1);
@@ -1245,8 +1317,10 @@ void test_bounded_mouse_queue() {
     move.result.action_count = 1;
     move.result.actions[0].kind = mgh::SessionActionKind::move;
     mgh::QueuedMouseEvent critical;
+    critical.right_up_ms = 123456;
+    critical.events_ahead = 1;
     critical.result.action_count = 1;
-    critical.result.actions[0].kind = mgh::SessionActionKind::begin;
+    critical.result.actions[0].kind = mgh::SessionActionKind::finish;
 
     CHECK_TRUE(queue.push(move));
     move.result.actions[0].point.x = 2;
@@ -1266,7 +1340,9 @@ void test_bounded_mouse_queue() {
     CHECK_TRUE(!queue.push(move));
     CHECK_TRUE(queue.dropped() == 3);
     CHECK_TRUE(queue.pop(out));
-    CHECK_TRUE(out.result.actions[0].kind == mgh::SessionActionKind::begin);
+    CHECK_TRUE(out.result.actions[0].kind == mgh::SessionActionKind::finish);
+    CHECK_TRUE(out.right_up_ms == 123456);
+    CHECK_TRUE(out.events_ahead == 1);
 }
 
 void test_hook_health_fake_clock() {

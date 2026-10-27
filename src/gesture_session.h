@@ -66,11 +66,13 @@ struct SessionResult {
 class GestureSession {
 public:
     SessionResult handle_event(const SessionEvent& event, const BindingSnapshot& bindings);
-    SessionResult reconcile_buttons(bool left_down, bool right_down,
-                                    const BindingSnapshot& bindings);
+    SessionResult reconcile_left_button(bool left_down, const BindingSnapshot& bindings);
     void reset();
 
     GestureSessionState state() const;
+    bool tracks_mouse_move() const {
+        return right_down_ && session_from_right_ && !rocker_armed_;
+    }
     bool right_moved() const { return right_moved_; }
     int wheel_accumulator() const { return wheel_accum_; }
 
@@ -92,6 +94,8 @@ private:
 
 struct QueuedMouseEvent {
     SessionResult result;
+    std::uint64_t right_up_ms = 0;
+    std::size_t events_ahead = 0;
     bool droppable = false;
 };
 
