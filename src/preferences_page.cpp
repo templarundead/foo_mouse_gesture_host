@@ -60,7 +60,6 @@ enum ControlId : int {
 
 enum class EditorActionType : std::uint8_t {
     none,
-    select,
     add,
     new_binding,
     reset,
@@ -71,29 +70,8 @@ enum class EditorActionType : std::uint8_t {
 
 struct EditorPendingAction {
     EditorActionType type = EditorActionType::none;
-    int binding_index = -1;
     int delta = 0;
 };
-
-enum class EditorGuardDecision : std::uint8_t {
-    save,
-    discard,
-    cancel,
-};
-
-const wchar_t* editor_action_label(EditorActionType type) {
-    switch (type) {
-    case EditorActionType::select: return L"select binding";
-    case EditorActionType::add: return L"Add";
-    case EditorActionType::new_binding: return L"New";
-    case EditorActionType::reset: return L"Reset";
-    case EditorActionType::apply: return L"Apply";
-    case EditorActionType::remove: return L"Delete";
-    case EditorActionType::move: return L"Move";
-    case EditorActionType::none: break;
-    }
-    return L"action";
-}
 
 // Preferences живёт в UI-потоке. Session переживает уничтожение страницы,
 // но не restart/forced shutdown/crash и не меняет persisted config.
@@ -190,7 +168,6 @@ BOOL CALLBACK invalidate_child_proc(HWND child, LPARAM) {
 class GestureListControl {
 public:
     using select_handler = std::function<void(int binding_index)>;
-    using select_guard_handler = std::function<bool(int binding_index)>;
     using sort_handler = std::function<void()>;
 
     static const wchar_t* class_name() { return L"foo_mouse_gesture_host_list"; }
@@ -248,7 +225,6 @@ public:
     }
 
     void set_select_handler(select_handler handler) { on_select_ = std::move(handler); }
-    void set_select_guard_handler(select_guard_handler handler) { on_select_guard_ = std::move(handler); }
     void set_sort_handler(sort_handler handler) { on_sort_ = std::move(handler); }
     void set_owner_service(service_base* owner) { owner_service_ = owner; }
 
@@ -528,7 +504,6 @@ private:
         if (index == selected_ || (*rows_)[static_cast<std::size_t>(index)].is_header) return;
 
         const int binding_index = (*rows_)[static_cast<std::size_t>(index)].binding_index;
-        if (on_select_guard_ && !on_select_guard_(binding_index)) return;
 
         selected_ = index;
         invalidate();
@@ -575,7 +550,6 @@ private:
     COLORREF header_background_ = RGB(45, 45, 45);
 
     select_handler on_select_;
-    select_guard_handler on_select_guard_;
     sort_handler on_sort_;
     service_base* owner_service_ = nullptr;
 };
@@ -1032,22 +1006,16 @@ private:
     void on_editor_changed();
     void sync_page_dirty(bool force_notify = false);
 
-    EditorGuardDecision show_editor_guard(const EditorPendingAction& action);
     void request_editor_action(const EditorPendingAction& action);
     void execute_editor_action(const EditorPendingAction& action);
-    bool commit_editor_changes();
 
     void on_group_changed();
     void on_command_changed();
     void on_place_changed();
-    bool on_list_selection_guard(int binding_index);
     void on_list_selection_changed(int index);
     void on_new();
     bool on_add();
     bool on_update();
-    void on_save_editor();
-    void on_discard_editor();
-    void on_cancel_editor_action();
     void on_delete();
     void on_move(int delta);
     void on_direction(Token token);
@@ -1090,7 +1058,6 @@ private:
     GestureSettings settings_;
     std::vector<CatalogEntry> catalog_;
     GestureEditorState editor_;
-    EditorPendingAction pending_action_;
 
     // --- Win32 ---
     HWND hwnd_ = nullptr;
@@ -1164,7 +1131,6 @@ private:
     bool dirty_ = false;
     bool committed_dirty_ = false;
     bool notified_editor_busy_ = false;
-    bool editor_guard_active_ = false;
     bool updating_ = false;
     bool diagnostics_logged_ = false;
     bool pending_state_notify_ = false;
@@ -1378,9 +1344,6 @@ void GesturePreferencesInstance::create_children() {
     } else {
         list_control_.set_fonts(font_, header_font_, dpi_);
         list_control_.set_owner_service(this);
-        list_control_.set_select_guard_handler([this](int binding_index) {
-            return on_list_selection_guard(binding_index);
-        });
         list_control_.set_select_handler([this](int binding_index) {
             on_list_selection_changed(binding_index);
             update_buttons();
@@ -2016,7 +1979,6 @@ void GesturePreferencesInstance::restore_editor_draft_session(
     GestureEditorState restored = restore_editor_draft(saved.value(), settings_.bindings);
     if (restored.mode == GestureEditorMode::idle) return;
 
-    pending_action_ = {};
     editor_ = std::move(restored);
     if (editor_.mode == GestureEditorMode::edit) {
         select_binding(editor_.binding_index);
@@ -2028,7 +1990,6 @@ void GesturePreferencesInstance::restore_editor_draft_session(
 }
 
 void GesturePreferencesInstance::load_new_editor() {
-    pending_action_ = {};
     list_control_.clear_selection();
     editor_ = make_new_editor_state();
     sync_editor_controls();
@@ -2037,7 +1998,6 @@ void GesturePreferencesInstance::load_new_editor() {
 
 void GesturePreferencesInstance::load_binding_editor(int binding_index) {
     if (binding_index < 0 || binding_index >= static_cast<int>(settings_.bindings.size())) return;
-    pending_action_ = {};
     editor_ = make_edit_editor_state(settings_.bindings[static_cast<std::size_t>(binding_index)], binding_index);
     sync_editor_controls();
     sync_page_dirty();
@@ -2236,80 +2196,25 @@ void GesturePreferencesInstance::update_buttons() {
 void GesturePreferencesInstance::on_editor_changed() {
     if (updating_) return;
     refresh_editor_dirty(editor_);
-    if (!editor_.dirty) pending_action_ = {};
     sync_page_dirty(true);
     update_buttons();
 }
 
-EditorGuardDecision GesturePreferencesInstance::show_editor_guard(const EditorPendingAction& action) {
-    if (hwnd_ == nullptr || !IsWindow(hwnd_)) return EditorGuardDecision::cancel;
-
-    const std::wstring content = std::wstring(L"Pending action: ") + editor_action_label(action.type) +
-        L".\r\n\r\nSave stages Add/Update; Discard restores the baseline. "
-        L"Apply remains the only commit of the whole Preferences page.";
-    const TASKDIALOG_BUTTON buttons[] = {
-        { IDYES, L"Save changes" },
-        { IDNO, L"Discard changes" },
-        { IDCANCEL, L"Отменить правку" },
-    };
-
-    TASKDIALOGCONFIG config = {};
-    config.cbSize = sizeof(config);
-    const HWND root = GetAncestor(hwnd_, GA_ROOT);
-    config.hwndParent = root != nullptr ? root : hwnd_;
-    config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
-    config.pszWindowTitle = L"Mouse Gesture Host";
-    config.pszMainInstruction = L"Save the unsaved binding changes?";
-    config.pszContent = content.c_str();
-    config.cButtons = 3;
-    config.pButtons = buttons;
-    config.nDefaultButton = IDCANCEL;
-    config.pszMainIcon = TD_WARNING_ICON;
-
-    int pressed = IDCANCEL;
-    const HRESULT result = TaskDialogIndirect(&config, &pressed, nullptr, nullptr);
-    if (FAILED(result)) {
-        FB2K_console_formatter() << "Mouse Gesture Host: TaskDialogIndirect failed (HRESULT "
-                                 << static_cast<long>(result) << "); draft action cancelled";
-        return EditorGuardDecision::cancel;
-    }
-    if (pressed == IDYES) return EditorGuardDecision::save;
-    if (pressed == IDNO) return EditorGuardDecision::discard;
-    return EditorGuardDecision::cancel;
-}
-
 void GesturePreferencesInstance::request_editor_action(const EditorPendingAction& action) {
-    if (action.type == EditorActionType::none || editor_guard_active_) return;
-    if (!editor_.dirty) {
-        execute_editor_action(action);
-        return;
-    }
+    if (action.type == EditorActionType::none) return;
 
-    pending_action_ = action;
-    editor_guard_active_ = true;
-    const EditorGuardDecision decision = show_editor_guard(action);
-    editor_guard_active_ = false;
-
-    // Во время modal loop хост мог уничтожить окно вопреки busy. Session уже
-    // содержит draft; не обращаемся к уничтоженным controls.
-    if (hwnd_ == nullptr || !IsWindow(hwnd_)) {
-        pending_action_ = {};
-        return;
+    // Без модального guard: сбрасываем только незавершённую правку редактора.
+    // Уже добавленные или обновлённые bindings и host Apply это не затрагивает.
+    if (editor_.dirty) {
+        discard_editor_changes(editor_);
+        sync_editor_controls();
+        sync_page_dirty();
     }
-
-    switch (decision) {
-    case EditorGuardDecision::save: on_save_editor(); break;
-    case EditorGuardDecision::discard: on_discard_editor(); break;
-    case EditorGuardDecision::cancel: on_cancel_editor_action(); break;
-    }
+    execute_editor_action(action);
 }
 
 void GesturePreferencesInstance::execute_editor_action(const EditorPendingAction& action) {
     switch (action.type) {
-    case EditorActionType::select:
-        select_binding(action.binding_index);
-        load_binding_editor(action.binding_index);
-        break;
     case EditorActionType::add: on_add(); break;
     case EditorActionType::new_binding: on_new(); break;
     case EditorActionType::reset: reset(); break;
@@ -2318,41 +2223,6 @@ void GesturePreferencesInstance::execute_editor_action(const EditorPendingAction
     case EditorActionType::move: on_move(action.delta); break;
     case EditorActionType::none: break;
     }
-}
-
-bool GesturePreferencesInstance::commit_editor_changes() {
-    if (editor_.mode == GestureEditorMode::new_binding) return on_add();
-    if (editor_.mode == GestureEditorMode::edit) return on_update();
-    return false;
-}
-
-void GesturePreferencesInstance::on_save_editor() {
-    if (!editor_.dirty) return;
-
-    const EditorPendingAction action = pending_action_;
-    pending_action_ = {};
-    if (commit_editor_changes()) {
-        execute_editor_action(action);
-    } else {
-        pending_action_ = action;
-        update_buttons();
-    }
-}
-
-void GesturePreferencesInstance::on_discard_editor() {
-    if (!editor_.dirty) return;
-
-    const EditorPendingAction action = pending_action_;
-    pending_action_ = {};
-    discard_editor_changes(editor_);
-    sync_editor_controls();
-    sync_page_dirty();
-    execute_editor_action(action);
-}
-
-void GesturePreferencesInstance::on_cancel_editor_action() {
-    pending_action_ = {};
-    update_buttons();
 }
 
 void GesturePreferencesInstance::on_group_changed() {
@@ -2373,12 +2243,6 @@ void GesturePreferencesInstance::on_place_changed() {
     if (updating_) return;
     editor_.draft.place = current_place_id();
     on_editor_changed();
-}
-
-bool GesturePreferencesInstance::on_list_selection_guard(int binding_index) {
-    if (updating_ || !editor_.dirty) return true;
-    request_editor_action({ EditorActionType::select, binding_index });
-    return false;
 }
 
 void GesturePreferencesInstance::on_list_selection_changed(int binding_index) {
@@ -2522,7 +2386,7 @@ void GesturePreferencesInstance::on_move(int delta) {
     const GestureSortState sort = list_control_.sort_state();
     if (!can_move_gesture_bindings(sort, group_by_category_)) return;
     if (editor_.dirty) {
-        request_editor_action({ EditorActionType::move, -1, delta });
+        request_editor_action({ EditorActionType::move, delta });
         return;
     }
 
