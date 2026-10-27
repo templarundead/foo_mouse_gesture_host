@@ -52,7 +52,8 @@ enum ControlId : int {
     kIdDisable,
     kIdAlphabet,
     kIdFirstOnly,
-    kIdHelp
+    kIdHelp,
+    kIdGroupByCategory
 };
 
 //! Идентификаторы групп ListView (заголовки-разделители в таблице).
@@ -117,12 +118,12 @@ const wchar_t* gesture_category_title(GestureCategory category) {
     }
 }
 
-const wchar_t* gesture_category_cell_prefix(GestureCategory category) {
+const wchar_t* gesture_category_chip(GestureCategory category) {
     switch (category) {
-    case GestureCategory::wheel_up: return L"Wheel Up · ";
-    case GestureCategory::wheel_down: return L"Wheel Down · ";
-    case GestureCategory::rocker: return L"Rocker · ";
-    default: return L"Gesture · ";
+    case GestureCategory::wheel_up: return L"W↑";
+    case GestureCategory::wheel_down: return L"W↓";
+    case GestureCategory::rocker: return L"R↔";
+    default: return L"Dir";
     }
 }
 
@@ -204,6 +205,15 @@ public:
 
     void set_select_handler(select_handler handler) { on_select_ = std::move(handler); }
     void set_sort_handler(sort_handler handler) { on_sort_ = std::move(handler); }
+
+    void set_category_chips(bool show) {
+        if (show_category_chips_ == show) return;
+        show_category_chips_ = show;
+        const int minimum = min_column_width(0);
+        if (columns_[0] < minimum) columns_[0] = minimum;
+        update_scroll_info();
+        invalidate();
+    }
 
     GestureSortState sort_state() const { return sort_state_; }
     void set_sort_state(GestureSortState state) {
@@ -303,7 +313,7 @@ private:
         const int width = client.right - client.left;
         if (width <= 0) return;
 
-        const int min_gesture = scale(60);
+        const int min_gesture = scale(show_category_chips_ ? 92 : 60);
         const int min_command = scale(160);
         const int min_place = scale(80);
 
@@ -419,7 +429,7 @@ private:
 
     int min_column_width(int column) const {
         switch (column) {
-        case 0: return scale(60);
+        case 0: return scale(show_category_chips_ ? 92 : 60);
         case 1: return scale(160);
         default: return scale(80);
         }
@@ -489,6 +499,7 @@ private:
     bool focused_ = false;
 
     bool columns_customized_ = false;
+    bool show_category_chips_ = false;
     int resizing_column_ = -1;
     int resize_anchor_x_ = 0;
     int resize_start_width_ = 0;
@@ -571,6 +582,23 @@ void GestureListControl::draw_row(HDC dc, const RECT& row_rect, const GestureLis
         left += columns_[column];
 
         if (cell.right <= cell.left) continue;
+
+        if (column == 0 && show_category_chips_) {
+            RECT chip = cell;
+            chip.right = chip.left + scale(30);
+            chip.top += scale(2);
+            chip.bottom -= scale(2);
+            if (chip.right > chip.left && chip.bottom > chip.top) {
+                HBRUSH chip_brush = CreateSolidBrush(header_background_);
+                FillRect(dc, &chip, chip_brush);
+                DeleteObject(chip_brush);
+                SetTextColor(dc, text_);
+                DrawTextW(dc, gesture_category_chip(row.gesture_category), -1, &chip,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
+            cell.left += scale(34);
+            if (cell.right <= cell.left) continue;
+        }
 
         SetTextColor(dc, selected ? selected_text_ : (column == 2 ? muted_ : text_));
         DrawTextW(dc, cells[column]->c_str(), static_cast<int>(cells[column]->size()), &cell,
@@ -999,6 +1027,7 @@ private:
 
     HWND count_label_ = nullptr;
     HWND help_button_ = nullptr;
+    HWND group_by_category_check_ = nullptr;
     HWND tooltip_ = nullptr;
     HFONT header_font_ = nullptr;
 
@@ -1061,6 +1090,7 @@ private:
     bool pending_state_notify_ = false;
     bool list_diagnostics_logged_ = false;
     bool help_visible_ = false;
+    bool group_by_category_ = true;
 
     preferences_page_callback::ptr callback_;
     fb2k::CCoreDarkModeHooks dark_mode_;
@@ -1264,6 +1294,8 @@ void GesturePreferencesInstance::create_children() {
     }
 
     count_label_ = make_static(L"", SS_LEFT | SS_CENTERIMAGE);
+    group_by_category_check_ = make_checkbox(L"Group by category", kIdGroupByCategory);
+    Button_SetCheck(group_by_category_check_, group_by_category_ ? BST_CHECKED : BST_UNCHECKED);
     // Текст окна остаётся доступным именем Help; видимый маркер рисуется как "?".
     help_button_ = make_button(L"Help", kIdHelp, BS_OWNERDRAW);
     if (help_button_ != nullptr) {
@@ -1398,6 +1430,8 @@ void GesturePreferencesInstance::create_tooltips() {
     add_tooltip(delete_button_, L"Delete: remove the selected binding.");
     add_tooltip(move_up_button_, L"Up: move the selected binding earlier in manual order.");
     add_tooltip(move_down_button_, L"Down: move the selected binding later in manual order.");
+    add_tooltip(group_by_category_check_,
+                L"Group by category: show one header per category; disable for a flat list with category chips. This view option does not change execution order.");
     add_tooltip(help_button_, kPreferencesHelp);
 
     // Отдельный tracking tool позволяет открыть ту же справку кнопкой Help
@@ -1667,13 +1701,19 @@ void GesturePreferencesInstance::layout() {
     // клиентской области таблицы (без рамки и вертикального скроллбара).
     list_control_.refresh();
 
-    // Счётчик и Help делят существующую строку, поэтому справка не отнимает
-    // дополнительную высоту у таблицы.
+    // Счётчик, режим группировки и Help делят существующую строку, поэтому
+    // дополнительные элементы не отнимают высоту у таблицы.
     const int help_width = scale(20);
-    const int count_width = list_width - help_width - gap;
-    MoveWindow(count_label_, margin + scale(6), count_top, count_width, count_height, TRUE);
-    MoveWindow(help_button_, width - margin - help_width, count_top,
-               help_width, count_height, TRUE);
+    int group_width = text_width(L"Group by category") + scale(24);
+    if (group_width < scale(110)) group_width = scale(110);
+    const int help_x = width - margin - help_width;
+    const int group_x = help_x - gap - group_width;
+    const int count_x = margin + scale(6);
+    int count_width = group_x - gap - count_x;
+    if (count_width < 0) count_width = 0;
+    MoveWindow(count_label_, count_x, count_top, count_width, count_height, TRUE);
+    MoveWindow(group_by_category_check_, group_x, count_top, group_width, count_height, TRUE);
+    MoveWindow(help_button_, help_x, count_top, help_width, count_height, TRUE);
 
     const int lower_top = count_top + count_height + count_gap;
 
@@ -1893,28 +1933,12 @@ void GesturePreferencesInstance::refresh_list() {
         manual_rows.push_back(std::move(row));
     }
 
-    rows_.clear();
-    if (sort.column == GestureSortColumn::none) {
-        const wchar_t* previous_group_title = nullptr;
-        rows_.reserve(manual_rows.size() + 4);
-        for (auto& row : manual_rows) {
-            const wchar_t* group_title = gesture_category_title(row.gesture_category);
-            if (previous_group_title == nullptr || wcscmp(previous_group_title, group_title) != 0) {
-                GestureListRow header;
-                header.is_header = true;
-                header.header = group_title;
-                rows_.push_back(std::move(header));
-                previous_group_title = group_title;
-            }
-            rows_.push_back(std::move(row));
-        }
-    } else {
-        rows_ = make_gesture_list_view(manual_rows, sort);
-        for (auto& row : rows_) {
-            row.gesture = std::wstring(gesture_category_cell_prefix(row.gesture_category)) + row.gesture;
-        }
+    rows_ = make_gesture_list_view(manual_rows, sort, group_by_category_);
+    for (auto& row : rows_) {
+        if (row.is_header) row.header = gesture_category_title(row.gesture_category);
     }
 
+    list_control_.set_category_chips(!group_by_category_);
     list_control_.set_rows(&rows_);
     list_control_.refresh();
 
@@ -1926,7 +1950,7 @@ void GesturePreferencesInstance::refresh_list() {
     if (count_label_ != nullptr) {
         std::wstring text = L"Bindings: " + std::to_wstring(settings_.bindings.size()) + L" - ";
         if (sort.column == GestureSortColumn::none) {
-            text += L"Manual order";
+            text += group_by_category_ ? L"Manual order within groups" : L"Manual order";
         } else {
             switch (sort.column) {
             case GestureSortColumn::gesture: text += L"Gesture"; break;
@@ -2551,6 +2575,12 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
         case kIdDelete: if (code == BN_CLICKED) on_delete(); return 0;
         case kIdMoveUp: if (code == BN_CLICKED) on_move(-1); return 0;
         case kIdMoveDown: if (code == BN_CLICKED) on_move(1); return 0;
+        case kIdGroupByCategory:
+            if (code == BN_CLICKED) {
+                group_by_category_ = Button_GetCheck(group_by_category_check_) == BST_CHECKED;
+                refresh_list();
+            }
+            return 0;
         case kIdHelp: if (code == BN_CLICKED) on_help(); return 0;
 
         case kIdStrokeEdit: if (code == EN_CHANGE) on_settings_control_changed(); return 0;

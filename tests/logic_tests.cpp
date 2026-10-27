@@ -760,9 +760,29 @@ void test_gesture_list_grouping() {
                 CHECK_TRUE(row.gesture == manual[static_cast<std::size_t>(row.binding_index)].gesture);
             }
         }
+        for (const auto category : expected_headers) {
+            std::vector<int> expected_group_order;
+            std::vector<int> actual_group_order;
+            for (const auto& row : flat) {
+                if (row.gesture_category == category) expected_group_order.push_back(row.binding_index);
+            }
+            for (const auto& row : grouped) {
+                if (!row.is_header && row.gesture_category == category) {
+                    actual_group_order.push_back(row.binding_index);
+                }
+            }
+            CHECK_TRUE(actual_group_order == expected_group_order);
+        }
         CHECK_TRUE(sort_binding_order(manual) == original_order);
         CHECK_TRUE(bindings == original_bindings);
     }
+
+    const std::vector<mgh::GestureListRow> directional_only = { manual[0], manual[2] };
+    const auto directional_grouped = mgh::make_gesture_list_view(directional_only, {}, true);
+    CHECK_TRUE(directional_grouped.size() == 3);
+    CHECK_TRUE(group_header_categories(directional_grouped) ==
+               std::vector<mgh::GestureCategory>({ mgh::GestureCategory::directional }));
+    CHECK_TRUE(data_binding_order(directional_grouped) == std::vector<int>({ 0, 2 }));
 
     const std::vector<mgh::GestureListRow> empty;
     CHECK_TRUE(mgh::make_gesture_list_view(empty, {}, true).empty());
