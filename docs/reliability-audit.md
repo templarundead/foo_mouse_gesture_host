@@ -28,7 +28,7 @@ Latest на момент аудита — `v1.1.4`. Это не скрывает
 |---|---|
 | Выделенный `_beginthreadex` worker с message pump и message-only sink | `src/gesture_engine.cpp:96-149`, `:191-243` |
 | Минимальный numeric callback; bounded ring 256, drop counter, старые move вытесняются первыми | `src/gesture_engine.cpp:531-561`, `src/gesture_session.h:101-153` |
-| Recognizer, строки и `SendInput` вне callback; команды и SDK console только на main thread | `src/gesture_engine.cpp:302-419`, `:431-472` |
+| Recognizer и строки в worker вне callback; `SendInput`, команды и SDK console только на main thread | `src/gesture_engine.cpp` |
 | Own-event `dwExtraInfo` marker вместо injected + 500 ms | `src/gesture_engine.cpp:19`, `:451-468`, `:531-536` |
 | Replay по сохранённым координатам после проверки главного окна и физического состояния ПКМ | `src/gesture_engine.cpp:431-472` |
 | Health timer, reinstall, exponential backoff и bounded logs | `src/gesture_engine.cpp:474-528`, `src/gesture_session.cpp:248-272` |
