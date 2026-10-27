@@ -49,9 +49,6 @@ enum ControlId : int {
     kIdDelete,
     kIdMoveUp,
     kIdMoveDown,
-    kIdCommandChooseAnother,
-    kIdCommandRetry,
-    kIdCommandCopyDetails,
     kIdStrokeEdit,
     kIdStrokeSpin,
     kIdDisable,
@@ -1032,7 +1029,6 @@ private:
     void refresh_gesture_text();
     void refresh_command_list();
     void update_buttons();
-    void update_command_status();
     void on_editor_changed();
     void sync_page_dirty(bool force_notify = false);
 
@@ -1044,9 +1040,6 @@ private:
     void on_group_changed();
     void on_command_changed();
     void on_place_changed();
-    void on_command_choose_another();
-    void on_command_retry();
-    void on_command_copy_details();
     bool on_list_selection_guard(int binding_index);
     void on_list_selection_changed(int index);
     void on_new();
@@ -1092,14 +1085,12 @@ private:
     int scale(int value) const { return MulDiv(value, dpi_, 96); }
     //! Ширина текста в пикселях шрифтом страницы (для расчёта ширины кнопок).
     int text_width(const wchar_t* text) const;
-    std::wstring command_details_text() const;
 
     // --- данные ---
     GestureSettings settings_;
     std::vector<CatalogEntry> catalog_;
     GestureEditorState editor_;
     EditorPendingAction pending_action_;
-    std::wstring command_status_text_;
 
     // --- Win32 ---
     HWND hwnd_ = nullptr;
@@ -1126,9 +1117,6 @@ private:
     HWND gesture_label_ = nullptr;
     HWND group_label_ = nullptr;
     HWND command_label_ = nullptr;
-    HWND command_choose_button_ = nullptr;
-    HWND command_retry_button_ = nullptr;
-    HWND command_copy_button_ = nullptr;
     HWND place_label_ = nullptr;
 
     HWND dir_up_ = nullptr;
@@ -1177,7 +1165,6 @@ private:
     bool committed_dirty_ = false;
     bool notified_editor_busy_ = false;
     bool editor_guard_active_ = false;
-    bool command_actions_shown_ = false;
     bool updating_ = false;
     bool diagnostics_logged_ = false;
     bool pending_state_notify_ = false;
@@ -1452,13 +1439,6 @@ void GesturePreferencesInstance::create_children() {
     move_up_button_ = make_button(L"Up", kIdMoveUp);
     move_down_button_ = make_button(L"Down", kIdMoveDown);
 
-    command_choose_button_ = make_button(L"Выбрать другую", kIdCommandChooseAnother);
-    command_retry_button_ = make_button(L"Повторить поиск", kIdCommandRetry);
-    command_copy_button_ = make_button(L"Скопировать детали", kIdCommandCopyDetails);
-    ShowWindow(command_choose_button_, SW_HIDE);
-    ShowWindow(command_retry_button_, SW_HIDE);
-    ShowWindow(command_copy_button_, SW_HIDE);
-
     stroke_edit_ = make_edit(kIdStrokeEdit, ES_NUMBER | ES_RIGHT);
     stroke_spin_ = CreateWindowExW(0, UPDOWN_CLASSW, L"",
                                    WS_CHILD | WS_VISIBLE | UDS_ARROWKEYS | UDS_SETBUDDYINT | UDS_NOTHOUSANDS,
@@ -1541,9 +1521,6 @@ void GesturePreferencesInstance::create_tooltips() {
     add_tooltip(gesture_edit_, L"Gesture: canonical tokens for the binding being edited.");
     add_tooltip(group_combo_, L"Group: choose a main-menu or context-menu command source.");
     add_tooltip(command_combo_, L"Command: choose the command bound to the gesture.");
-    add_tooltip(command_choose_button_, L"Выбрать другую: focus the Command list without changing the binding automatically.");
-    add_tooltip(command_retry_button_, L"Повторить поиск: rebuild the catalog and resolve only the existing command identity.");
-    add_tooltip(command_copy_button_, L"Скопировать детали: copy the full path, reason, and command identity to the clipboard.");
     add_tooltip(place_combo_, L"Place: choose the execution context for the command.");
 
     add_tooltip(new_button_, L"New: clear the editor after resolving any unsaved changes.");
@@ -1797,36 +1774,9 @@ void GesturePreferencesInstance::layout() {
         }
     }
 
-    const ButtonSpec command_action_specs[3] = {
-        { command_choose_button_, L"Выбрать другую", 110 },
-        { command_retry_button_, L"Повторить поиск", 110 },
-        { command_copy_button_, L"Скопировать детали", 120 },
-    };
-    int command_action_widths[3] = {};
-    int command_action_row_of[3] = {};
-    int command_action_rows = command_actions_shown_ ? 1 : 0;
-    int command_action_used = 0;
-    for (int i = 0; i < 3; ++i) {
-        const int needed = text_width(command_action_specs[i].text) + 2 * button_padding;
-        command_action_widths[i] = needed > scale(command_action_specs[i].min_width)
-            ? needed
-            : scale(command_action_specs[i].min_width);
-        if (command_action_widths[i] > form_width_early) command_action_widths[i] = form_width_early;
-        if (!command_actions_shown_) continue;
-        if (command_action_used > 0 && command_action_used + command_action_widths[i] > form_width_early) {
-            ++command_action_rows;
-            command_action_used = 0;
-        }
-        command_action_row_of[i] = command_action_rows - 1;
-        command_action_used += command_action_widths[i] + gap;
-    }
-    const int command_actions_height = command_action_rows > 0
-        ? command_action_rows * control_height + (command_action_rows - 1) * gap + scale(4)
-        : 0;
-
-    // --- правая колонка: 4 строки формы + действия с командой + кнопки -----
+    // --- правая колонка: 4 строки формы + кнопки ---------------------------
     const int row_step = control_height + scale(6);
-    const int right_content_height = 4 * row_step + command_actions_height + scale(8) +
+    const int right_content_height = 4 * row_step + scale(8) +
                                      button_rows * control_height + (button_rows - 1) * gap + scale(6);
 
     // Возвращаем таблице фактически освобождённую высоту. Если нижнюю область
@@ -1966,19 +1916,7 @@ void GesturePreferencesInstance::layout() {
     SetWindowPos(command_combo_, nullptr, editor_x, lower_top + 2 * row_step, editor_width, scale(240),
                  SWP_NOZORDER | SWP_NOACTIVATE);
 
-    int place_y = lower_top + 3 * row_step;
-    if (command_actions_shown_) {
-        int action_row_x[3] = {};
-        for (int i = 0; i < command_action_rows; ++i) action_row_x[i] = form_x;
-        for (int i = 0; i < 3; ++i) {
-            const int row = command_action_row_of[i];
-            const int y = place_y + row * (control_height + gap);
-            MoveWindow(command_action_specs[i].hwnd, action_row_x[row], y,
-                       command_action_widths[i], control_height, TRUE);
-            action_row_x[row] += command_action_widths[i] + gap;
-        }
-        place_y += command_actions_height;
-    }
+    const int place_y = lower_top + 3 * row_step;
     MoveWindow(place_label_, form_x, place_y + scale(4), label_width, label_height, TRUE);
     SetWindowPos(place_combo_, nullptr, editor_x, place_y, editor_width, scale(160),
                  SWP_NOZORDER | SWP_NOACTIVATE);
@@ -2289,79 +2227,6 @@ void GesturePreferencesInstance::update_buttons() {
     EnableWindow(delete_button_, has_selection);
     EnableWindow(move_up_button_, can_move && has_selection && selected > 0);
     EnableWindow(move_down_button_, can_move && has_selection && selected + 1 < count);
-    update_command_status();
-}
-
-void GesturePreferencesInstance::update_command_status() {
-    if (command_choose_button_ == nullptr || command_retry_button_ == nullptr ||
-        command_copy_button_ == nullptr) return;
-
-    const auto status = validate_editor_command(current_editor_binding(), catalog_, selected_command_index());
-    const std::wstring reason = status.message.empty()
-        ? L"Command catalog did not provide additional details."
-        : wide_from_utf8(status.message);
-    std::wstring detail;
-    std::wstring recovery;
-    bool show_actions = false;
-
-    switch (status.state) {
-    case GestureEditorCommandState::valid:
-        detail = L"[valid] Command selected explicitly.";
-        recovery = L"Add/Update stages only this binding; Apply commits the whole Preferences page.";
-        break;
-    case GestureEditorCommandState::unavailable:
-        detail = L"[unavailable] " + reason;
-        show_actions = true;
-        break;
-    case GestureEditorCommandState::conflict:
-        detail = L"[conflict] " + reason;
-        show_actions = true;
-        break;
-    case GestureEditorCommandState::none:
-        if (catalog_.empty()) {
-            detail = current_group_id() == "main"
-                ? L"[none] Main menu is not available yet."
-                : L"[none] No context commands; select tracks first.";
-            show_actions = true;
-        } else {
-            detail = L"[none] No command selected.";
-            recovery = L"Select an available command explicitly; Add/Update remain disabled until then.";
-        }
-        break;
-    }
-    if (show_actions) {
-        recovery = L"What to do: use «Выбрать другую» to pick a selectable command or «Повторить поиск». "
-                   L"«Скопировать детали» copies the full diagnostic.";
-    }
-
-    std::wstring text = detail + L"\r\n" + recovery;
-
-    bool layout_needed = false;
-    if (text != command_status_text_) {
-        command_status_text_ = std::move(text);
-    }
-
-    if (show_actions != command_actions_shown_) {
-        command_actions_shown_ = show_actions;
-        const int show = command_actions_shown_ ? SW_SHOW : SW_HIDE;
-        ShowWindow(command_choose_button_, show);
-        ShowWindow(command_retry_button_, show);
-        ShowWindow(command_copy_button_, show);
-        layout_needed = true;
-    }
-
-    bool has_selectable = false;
-    for (const auto& entry : catalog_) {
-        if (entry.selectable) {
-            has_selectable = true;
-            break;
-        }
-    }
-    EnableWindow(command_choose_button_, command_actions_shown_ && has_selectable);
-    EnableWindow(command_retry_button_, command_actions_shown_);
-    EnableWindow(command_copy_button_, command_actions_shown_);
-
-    if (layout_needed) layout();
 }
 
 // ---------------------------------------------------------------------------
@@ -2508,73 +2373,6 @@ void GesturePreferencesInstance::on_place_changed() {
     if (updating_) return;
     editor_.draft.place = current_place_id();
     on_editor_changed();
-}
-
-void GesturePreferencesInstance::on_command_choose_another() {
-    if (!IsWindowEnabled(command_choose_button_) || command_combo_ == nullptr) return;
-    SetFocus(command_combo_);
-    ComboBox_ShowDropdown(command_combo_, TRUE);
-}
-
-void GesturePreferencesInstance::on_command_retry() {
-    if (updating_ || !IsWindowEnabled(command_retry_button_)) return;
-
-    // Sync разрешает только identity из draft. При пустом draft CurSel остаётся
-    // -1; retry никогда не превращается в неявный выбор первой команды.
-    sync_editor_controls();
-    const auto status = validate_editor_command(current_editor_binding(), catalog_, selected_command_index());
-    FB2K_console_formatter() << "Mouse Gesture Host: command search retried in group \""
-                             << current_group_id().c_str() << "\", commands="
-                             << static_cast<t_size>(catalog_.size()) << ", state="
-                             << static_cast<int>(status.state);
-}
-
-std::wstring GesturePreferencesInstance::command_details_text() const {
-    const auto value_or_none = [](const std::string& value) {
-        return value.empty() ? std::wstring(L"(none)") : wide_from_utf8(value);
-    };
-
-    std::wstring details = L"Mouse Gesture Host command diagnostic\r\n";
-    details += L"Gesture: " + value_or_none(editor_.draft.gesture) + L"\r\n";
-    details += L"Group: " + value_or_none(editor_.draft.group) + L"\r\n";
-    details += L"Command path: " + value_or_none(editor_.draft.command_path) + L"\r\n";
-    details += L"Place: " + value_or_none(editor_.draft.place) + L"\r\n";
-    details += L"Command GUID: " + value_or_none(editor_.draft.command_guid) + L"\r\n";
-    details += L"Subcommand GUID: " + value_or_none(editor_.draft.subcommand_guid) + L"\r\n";
-    details += L"Node path: " + value_or_none(editor_.draft.node_path) + L"\r\n";
-    details += L"\r\n" + command_status_text_;
-    return details;
-}
-
-void GesturePreferencesInstance::on_command_copy_details() {
-    if (hwnd_ == nullptr || !IsWindowEnabled(command_copy_button_)) return;
-    const std::wstring details = command_details_text();
-    if (!OpenClipboard(hwnd_)) {
-        FB2K_console_formatter() << "Mouse Gesture Host: could not open clipboard for command details";
-        return;
-    }
-
-    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, (details.size() + 1) * sizeof(wchar_t));
-    bool copied = false;
-    if (memory != nullptr) {
-        auto* destination = static_cast<wchar_t*>(GlobalLock(memory));
-        if (destination != nullptr) {
-            std::wmemcpy(destination, details.c_str(), details.size() + 1);
-            GlobalUnlock(memory);
-            if (EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, memory) != nullptr) {
-                copied = true;
-                memory = nullptr; // Владение передано системному clipboard.
-            }
-        }
-    }
-    CloseClipboard();
-
-    if (memory != nullptr) GlobalFree(memory);
-    if (!copied) {
-        FB2K_console_formatter() << "Mouse Gesture Host: could not copy command details to clipboard";
-        return;
-    }
-    FB2K_console_formatter() << "Mouse Gesture Host: command details copied to clipboard";
 }
 
 bool GesturePreferencesInstance::on_list_selection_guard(int binding_index) {
@@ -3088,9 +2886,6 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
         case kIdGroupCombo: if (code == CBN_SELCHANGE) on_group_changed(); return 0;
         case kIdCommandCombo: if (code == CBN_SELCHANGE) on_command_changed(); return 0;
         case kIdPlaceCombo: if (code == CBN_SELCHANGE) on_place_changed(); return 0;
-        case kIdCommandChooseAnother: if (code == BN_CLICKED) on_command_choose_another(); return 0;
-        case kIdCommandRetry: if (code == BN_CLICKED) on_command_retry(); return 0;
-        case kIdCommandCopyDetails: if (code == BN_CLICKED) on_command_copy_details(); return 0;
 
         case kIdNew: if (code == BN_CLICKED) on_new(); return 0;
         case kIdAdd: if (code == BN_CLICKED) on_add(); return 0;
