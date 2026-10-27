@@ -178,6 +178,46 @@ int gesture_row_for_binding(const std::vector<GestureListRow>& rows, int binding
     return -1;
 }
 
+GestureEditorState make_new_editor_state(const std::string& group_id, const std::string& place_id) {
+    GestureEditorState editor;
+    editor.mode = GestureEditorMode::new_binding;
+    editor.draft.group = group_id;
+    editor.draft.place = place_id;
+    editor.baseline = editor.draft;
+    return editor;
+}
+
+GestureEditorState make_edit_editor_state(const GestureBinding& binding, int binding_index) {
+    GestureEditorState editor;
+    editor.mode = GestureEditorMode::edit;
+    editor.binding_index = binding_index;
+    editor.draft = binding;
+    editor.baseline = binding;
+    return editor;
+}
+
+void refresh_editor_dirty(GestureEditorState& editor) {
+    editor.dirty = editor.mode != GestureEditorMode::idle && editor.draft != editor.baseline;
+}
+
+void discard_editor_changes(GestureEditorState& editor) {
+    editor.draft = editor.baseline;
+    editor.dirty = false;
+}
+
+bool has_exact_binding_duplicate(const std::vector<GestureBinding>& bindings,
+                                 const GestureBinding& candidate, int ignore_index) {
+    for (std::size_t i = 0; i < bindings.size(); ++i) {
+        if (static_cast<int>(i) == ignore_index) continue;
+        const auto& binding = bindings[i];
+        if (binding.gesture == candidate.gesture && binding.group == candidate.group &&
+            binding.command_path == candidate.command_path && binding.place == candidate.place) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void select_editor_command(GestureBinding& draft, const std::vector<CatalogEntry>& catalog,
                            int catalog_index) {
     if (catalog_index < 0 || catalog_index >= static_cast<int>(catalog.size())) {

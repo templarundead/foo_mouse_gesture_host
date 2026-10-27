@@ -61,6 +61,31 @@ std::vector<GestureListRow> make_gesture_list_view(const std::vector<GestureList
 
 int gesture_row_for_binding(const std::vector<GestureListRow>& rows, int binding_index);
 
+enum class GestureEditorMode : std::uint8_t {
+    idle,
+    new_binding,
+    edit,
+};
+
+struct GestureEditorState {
+    GestureEditorMode mode = GestureEditorMode::idle;
+    //! Эфемерный ID в пределах открытой страницы, не persisted config field.
+    int binding_index = -1;
+    GestureBinding draft;
+    GestureBinding baseline;
+    bool dirty = false;
+};
+
+GestureEditorState make_new_editor_state(const std::string& group_id = "main",
+                                         const std::string& place_id = "main_window");
+GestureEditorState make_edit_editor_state(const GestureBinding& binding, int binding_index);
+void refresh_editor_dirty(GestureEditorState& editor);
+void discard_editor_changes(GestureEditorState& editor);
+
+//! Дубликат определяется пользовательскими полями, а не служебным node_path.
+bool has_exact_binding_duplicate(const std::vector<GestureBinding>& bindings,
+                                 const GestureBinding& candidate, int ignore_index = -1);
+
 enum class GestureEditorCommandState : std::uint8_t {
     none,
     valid,

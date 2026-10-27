@@ -861,6 +861,68 @@ void test_editor_command_state() {
     CHECK_TRUE(draft.command_path.empty());
 }
 
+void test_editor_state_and_duplicates() {
+    const mgh::GestureEditorState idle;
+    CHECK_TRUE(idle.mode == mgh::GestureEditorMode::idle);
+    CHECK_TRUE(!idle.dirty);
+
+    auto editor = mgh::make_new_editor_state();
+    CHECK_TRUE(editor.mode == mgh::GestureEditorMode::new_binding);
+    CHECK_TRUE(editor.binding_index == -1);
+    CHECK_TRUE(!editor.dirty);
+    CHECK_TRUE(editor.draft.group == "main");
+    CHECK_TRUE(editor.draft.place == "main_window");
+
+    const auto play = make_editor_catalog_entry("Playback/Play", "main", "guid-play");
+    editor.draft.gesture = "U";
+    mgh::select_editor_command(editor.draft, { play }, 0);
+    mgh::refresh_editor_dirty(editor);
+    CHECK_TRUE(editor.dirty);
+
+    std::vector<mgh::GestureBinding> bindings;
+    CHECK_TRUE(!mgh::has_exact_binding_duplicate(bindings, editor.draft));
+    bindings.push_back(editor.draft);
+    editor = mgh::make_edit_editor_state(bindings.back(), 0);
+    CHECK_TRUE(editor.mode == mgh::GestureEditorMode::edit);
+    CHECK_TRUE(editor.binding_index == 0);
+    CHECK_TRUE(!editor.dirty);
+
+    // Повторный Add видит дубликат; без явного подтверждения размер не меняется.
+    bool confirm_duplicate = false;
+    if (mgh::has_exact_binding_duplicate(bindings, editor.draft) && confirm_duplicate) {
+        bindings.push_back(editor.draft);
+    }
+    CHECK_TRUE(mgh::has_exact_binding_duplicate(bindings, editor.draft));
+    CHECK_TRUE(bindings.size() == 1);
+
+    auto different_command = editor.draft;
+    different_command.command_path = "Playback/Next";
+    CHECK_TRUE(!mgh::has_exact_binding_duplicate(bindings, different_command));
+
+    auto same_user_fields = editor.draft;
+    same_user_fields.command_guid = "other-guid";
+    same_user_fields.node_path = "9.8.7";
+    CHECK_TRUE(mgh::has_exact_binding_duplicate(bindings, same_user_fields));
+
+    editor.draft.gesture = "D";
+    mgh::refresh_editor_dirty(editor);
+    CHECK_TRUE(editor.dirty);
+    mgh::discard_editor_changes(editor);
+    CHECK_TRUE(!editor.dirty);
+    CHECK_TRUE(editor.draft == editor.baseline);
+    CHECK_TRUE(editor.draft.gesture == "U");
+
+    // Явное подтверждение разрешает полный дубликат и переводит редактор в новый Edit.
+    confirm_duplicate = true;
+    if (mgh::has_exact_binding_duplicate(bindings, editor.draft) && confirm_duplicate) {
+        bindings.push_back(editor.draft);
+        editor = mgh::make_edit_editor_state(bindings.back(), 1);
+    }
+    CHECK_TRUE(bindings.size() == 2);
+    CHECK_TRUE(editor.mode == mgh::GestureEditorMode::edit);
+    CHECK_TRUE(editor.binding_index == 1);
+}
+
 mgh::BindingSnapshot make_session_snapshot(const std::vector<std::string>& gestures) {
     mgh::GestureSettings settings;
     for (const auto& gesture : gestures) {
@@ -1106,6 +1168,7 @@ int main(int argc, char** argv) {
     test_gesture_list_sort_view_and_selection();
     test_gesture_list_grouping();
     test_editor_command_state();
+    test_editor_state_and_duplicates();
     test_session_idle_drag_and_reconcile();
     test_session_rocker();
     test_session_wheel_and_fractional_delta();
