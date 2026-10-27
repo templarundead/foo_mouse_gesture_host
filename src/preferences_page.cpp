@@ -20,6 +20,8 @@ namespace {
 constexpr GUID kPreferencesPageGuid = { 0x6f0c4a52, 0x8d31, 0x4c0e, { 0x9b, 0x7e, 0x2a, 0x64, 0x11, 0xd8, 0x3f, 0x10 } };
 constexpr wchar_t kPreferencesPageClass[] = L"foo_mouse_gesture_host_preferences";
 constexpr UINT_PTR kCommandListSubclassId = 0x4d4748;
+constexpr UINT_PTR kHelpButtonSubclassId = 0x4d4749;
+constexpr UINT_PTR kHelpTrackingToolId = 1;
 
 enum ControlId : int {
     kIdList = 1001,
@@ -49,7 +51,9 @@ enum ControlId : int {
     kIdStrokeSpin,
     kIdDisable,
     kIdAlphabet,
-    kIdFirstOnly
+    kIdFirstOnly,
+    kIdHelp,
+    kIdGroupByCategory
 };
 
 //! Идентификаторы групп ListView (заголовки-разделители в таблице).
@@ -98,6 +102,13 @@ std::wstring arrow(const char* utf8) {
     return wide_from_utf8(utf8);
 }
 
+constexpr wchar_t kPreferencesHelp[] =
+    L"1. Build a gesture using the buttons on the left.\r\n"
+    L"2. Select a command and click Add New, then Apply.\r\n"
+    L"R+L: hold RMB and click LMB.\r\n"
+    L"L+R: hold LMB and click RMB.";
+constexpr wchar_t kStrokeHelp[] = L"Stroke Length: recognition threshold from 1 to 100.";
+
 const wchar_t* gesture_category_title(GestureCategory category) {
     switch (category) {
     case GestureCategory::wheel_up: return L"Wheel Up";
@@ -107,12 +118,12 @@ const wchar_t* gesture_category_title(GestureCategory category) {
     }
 }
 
-const wchar_t* gesture_category_cell_prefix(GestureCategory category) {
+const wchar_t* gesture_category_chip(GestureCategory category) {
     switch (category) {
-    case GestureCategory::wheel_up: return L"Wheel Up · ";
-    case GestureCategory::wheel_down: return L"Wheel Down · ";
-    case GestureCategory::rocker: return L"Rocker · ";
-    default: return L"Gesture · ";
+    case GestureCategory::wheel_up: return L"W↑";
+    case GestureCategory::wheel_down: return L"W↓";
+    case GestureCategory::rocker: return L"R↔";
+    default: return L"Dir";
     }
 }
 
@@ -194,6 +205,15 @@ public:
 
     void set_select_handler(select_handler handler) { on_select_ = std::move(handler); }
     void set_sort_handler(sort_handler handler) { on_sort_ = std::move(handler); }
+
+    void set_category_chips(bool show) {
+        if (show_category_chips_ == show) return;
+        show_category_chips_ = show;
+        const int minimum = min_column_width(0);
+        if (columns_[0] < minimum) columns_[0] = minimum;
+        update_scroll_info();
+        invalidate();
+    }
 
     GestureSortState sort_state() const { return sort_state_; }
     void set_sort_state(GestureSortState state) {
@@ -293,7 +313,7 @@ private:
         const int width = client.right - client.left;
         if (width <= 0) return;
 
-        const int min_gesture = scale(60);
+        const int min_gesture = scale(show_category_chips_ ? 92 : 60);
         const int min_command = scale(160);
         const int min_place = scale(80);
 
@@ -409,7 +429,7 @@ private:
 
     int min_column_width(int column) const {
         switch (column) {
-        case 0: return scale(60);
+        case 0: return scale(show_category_chips_ ? 92 : 60);
         case 1: return scale(160);
         default: return scale(80);
         }
@@ -479,6 +499,7 @@ private:
     bool focused_ = false;
 
     bool columns_customized_ = false;
+    bool show_category_chips_ = false;
     int resizing_column_ = -1;
     int resize_anchor_x_ = 0;
     int resize_start_width_ = 0;
@@ -561,6 +582,23 @@ void GestureListControl::draw_row(HDC dc, const RECT& row_rect, const GestureLis
         left += columns_[column];
 
         if (cell.right <= cell.left) continue;
+
+        if (column == 0 && show_category_chips_) {
+            RECT chip = cell;
+            chip.right = chip.left + scale(30);
+            chip.top += scale(2);
+            chip.bottom -= scale(2);
+            if (chip.right > chip.left && chip.bottom > chip.top) {
+                HBRUSH chip_brush = CreateSolidBrush(header_background_);
+                FillRect(dc, &chip, chip_brush);
+                DeleteObject(chip_brush);
+                SetTextColor(dc, text_);
+                DrawTextW(dc, gesture_category_chip(row.gesture_category), -1, &chip,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            }
+            cell.left += scale(34);
+            if (cell.right <= cell.left) continue;
+        }
 
         SetTextColor(dc, selected ? selected_text_ : (column == 2 ? muted_ : text_));
         DrawTextW(dc, cells[column]->c_str(), static_cast<int>(cells[column]->size()), &cell,
@@ -906,12 +944,20 @@ private:
     static LRESULT CALLBACK command_list_subclass_proc(HWND hwnd, UINT msg, WPARAM wparam,
                                                        LPARAM lparam, UINT_PTR subclass_id,
                                                        DWORD_PTR ref_data);
+    static LRESULT CALLBACK help_button_subclass_proc(HWND hwnd, UINT msg, WPARAM wparam,
+                                                      LPARAM lparam, UINT_PTR subclass_id,
+                                                      DWORD_PTR ref_data);
     LRESULT window_proc(UINT msg, WPARAM wparam, LPARAM lparam);
 
     static void register_window_class();
     void install_command_list_scroll_handler();
 
     void create_children();
+    void create_tooltips();
+    void add_tooltip(HWND control, const wchar_t* text);
+    void on_help();
+    void hide_tracking_help();
+    void set_tooltips_active(bool active);
     //! Подогнать страницу под клиентскую область родителя (хост не всегда
     //! присылает WM_SIZE, из-за чего низ страницы обрезался).
     void fit_to_parent();
@@ -980,11 +1026,11 @@ private:
     GestureListControl list_control_;
 
     HWND count_label_ = nullptr;
-    HWND hint_label_ = nullptr;
+    HWND help_button_ = nullptr;
+    HWND group_by_category_check_ = nullptr;
+    HWND tooltip_ = nullptr;
     HFONT header_font_ = nullptr;
 
-    HWND up_label_ = nullptr;
-    HWND down_label_ = nullptr;
     HWND left_label_ = nullptr;
     HWND right_label_ = nullptr;
     HWND wheel_label_ = nullptr;
@@ -1043,6 +1089,8 @@ private:
     bool diagnostics_logged_ = false;
     bool pending_state_notify_ = false;
     bool list_diagnostics_logged_ = false;
+    bool help_visible_ = false;
+    bool group_by_category_ = true;
 
     preferences_page_callback::ptr callback_;
     fb2k::CCoreDarkModeHooks dark_mode_;
@@ -1099,6 +1147,11 @@ GesturePreferencesInstance::GesturePreferencesInstance(HWND parent,
 }
 
 GesturePreferencesInstance::~GesturePreferencesInstance() {
+    if (tooltip_ != nullptr) {
+        hide_tracking_help();
+        if (IsWindow(tooltip_)) DestroyWindow(tooltip_);
+        tooltip_ = nullptr;
+    }
     if (hwnd_ != nullptr && IsWindow(hwnd_)) {
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
@@ -1210,7 +1263,8 @@ void GesturePreferencesInstance::create_children() {
 
     INITCOMMONCONTROLSEX common_controls = {};
     common_controls.dwSize = sizeof(common_controls);
-    common_controls.dwICC = ICC_LISTVIEW_CLASSES | ICC_UPDOWN_CLASS | ICC_STANDARD_CLASSES;
+    common_controls.dwICC = ICC_LISTVIEW_CLASSES | ICC_UPDOWN_CLASS | ICC_STANDARD_CLASSES |
+                            ICC_WIN95_CLASSES;
     InitCommonControlsEx(&common_controls);
 
     // Жирный шрифт для заголовков групп внутри таблицы.
@@ -1240,14 +1294,15 @@ void GesturePreferencesInstance::create_children() {
     }
 
     count_label_ = make_static(L"", SS_LEFT | SS_CENTERIMAGE);
-    hint_label_ = make_static(
-        L"1. Build a gesture using the buttons on the left.\r\n"
-        L"2. Select a command and click Add New, then Apply.\r\n"
-        L"R+L: hold RMB and click LMB; L+R: vice versa.",
-        SS_LEFT);
+    group_by_category_check_ = make_checkbox(L"Group by category", kIdGroupByCategory);
+    Button_SetCheck(group_by_category_check_, group_by_category_ ? BST_CHECKED : BST_UNCHECKED);
+    // Текст окна остаётся доступным именем Help; видимый маркер рисуется как "?".
+    help_button_ = make_button(L"Help", kIdHelp, BS_OWNERDRAW);
+    if (help_button_ != nullptr) {
+        SetWindowSubclass(help_button_, help_button_subclass_proc, kHelpButtonSubclassId,
+                          reinterpret_cast<DWORD_PTR>(this));
+    }
 
-    up_label_ = make_static(L"up", SS_CENTER);
-    down_label_ = make_static(L"down", SS_CENTER);
     left_label_ = make_static(L"left", SS_LEFT);
     right_label_ = make_static(L"right", SS_LEFT);
     wheel_label_ = make_static(L"wheel", SS_LEFT);
@@ -1312,6 +1367,144 @@ void GesturePreferencesInstance::create_children() {
         ComboBox_AddString(place_combo_, label.c_str());
     }
     ComboBox_SetCurSel(place_combo_, 0);
+
+    create_tooltips();
+}
+
+// ---------------------------------------------------------------------------
+//  Контекстные подсказки
+// ---------------------------------------------------------------------------
+
+void GesturePreferencesInstance::add_tooltip(HWND control, const wchar_t* text) {
+    if (tooltip_ == nullptr || control == nullptr || text == nullptr) return;
+
+    TOOLINFOW tool = {};
+    tool.cbSize = sizeof(tool);
+    tool.uFlags = TTF_SUBCLASS | TTF_IDISHWND;
+    tool.hwnd = hwnd_;
+    tool.uId = reinterpret_cast<UINT_PTR>(control);
+    tool.lpszText = const_cast<wchar_t*>(text);
+    SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool));
+}
+
+void GesturePreferencesInstance::create_tooltips() {
+    tooltip_ = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, nullptr,
+                               WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                               CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                               hwnd_, nullptr, core_api::get_my_instance(), nullptr);
+    if (tooltip_ == nullptr) {
+        FB2K_console_formatter() << "Mouse Gesture Host: failed to create preferences tooltips ("
+                                 << static_cast<unsigned long>(GetLastError()) << ")";
+        return;
+    }
+
+    SendMessageW(tooltip_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+    SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, scale(360));
+
+    add_tooltip(dir_up_left_, L"Up-left: add UL to Gesture.");
+    add_tooltip(dir_up_, L"Up: add U to Gesture.");
+    add_tooltip(dir_up_right_, L"Up-right: add UR to Gesture.");
+    add_tooltip(dir_left_, L"Left: add L to Gesture.");
+    add_tooltip(dir_backspace_, L"Backspace: remove the last token from Gesture.");
+    add_tooltip(dir_right_, L"Right: add R to Gesture.");
+    add_tooltip(dir_down_left_, L"Down-left: add DL to Gesture.");
+    add_tooltip(dir_down_, L"Down: add D to Gesture.");
+    add_tooltip(dir_down_right_, L"Down-right: add DR to Gesture.");
+
+    add_tooltip(wheel_up_, L"Wheel Up: hold RMB and scroll up; adds WU.");
+    add_tooltip(wheel_down_, L"Wheel Down: hold RMB and scroll down; adds WD.");
+    add_tooltip(rocker_rl_, L"R+L: hold RMB and click LMB.");
+    add_tooltip(rocker_lr_, L"L+R: hold LMB and click RMB.");
+
+    add_tooltip(stroke_label_, kStrokeHelp);
+    add_tooltip(stroke_edit_, kStrokeHelp);
+    add_tooltip(stroke_spin_, kStrokeHelp);
+
+    add_tooltip(gesture_edit_, L"Gesture: canonical tokens for the binding being edited.");
+    add_tooltip(group_combo_, L"Group: choose a main-menu or context-menu command source.");
+    add_tooltip(command_combo_, L"Command: choose the command bound to the gesture.");
+    add_tooltip(place_combo_, L"Place: choose the execution context for the command.");
+
+    add_tooltip(add_button_, L"Add New: add the current Gesture and Command as a binding.");
+    add_tooltip(update_button_, L"Update: replace the selected binding with the editor values.");
+    add_tooltip(delete_button_, L"Delete: remove the selected binding.");
+    add_tooltip(move_up_button_, L"Up: move the selected binding earlier in manual order.");
+    add_tooltip(move_down_button_, L"Down: move the selected binding later in manual order.");
+    add_tooltip(group_by_category_check_,
+                L"Group by category: show one header per category; disable for a flat list with category chips. This view option does not change execution order.");
+    add_tooltip(help_button_, kPreferencesHelp);
+
+    // Отдельный tracking tool позволяет открыть ту же справку кнопкой Help
+    // с клавиатуры, не создавая модальное окно внутри preferences instance.
+    TOOLINFOW help_tool = {};
+    help_tool.cbSize = sizeof(help_tool);
+    // Координаты дополнительно ограничиваются клиентской областью страницы.
+    help_tool.uFlags = TTF_TRACK | TTF_ABSOLUTE;
+    help_tool.hwnd = hwnd_;
+    help_tool.uId = kHelpTrackingToolId;
+    help_tool.lpszText = const_cast<wchar_t*>(kPreferencesHelp);
+    GetClientRect(hwnd_, &help_tool.rect);
+    SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&help_tool));
+}
+
+void GesturePreferencesInstance::hide_tracking_help() {
+    if (tooltip_ != nullptr && IsWindow(tooltip_)) {
+        if (help_visible_) {
+            TOOLINFOW help_tool = {};
+            help_tool.cbSize = sizeof(help_tool);
+            help_tool.hwnd = hwnd_;
+            help_tool.uId = kHelpTrackingToolId;
+            SendMessageW(tooltip_, TTM_TRACKACTIVATE, FALSE, reinterpret_cast<LPARAM>(&help_tool));
+        }
+        // Заодно закрываем обычный hover tooltip при Esc или клике вне.
+        SendMessageW(tooltip_, TTM_POP, 0, 0);
+    }
+    help_visible_ = false;
+}
+
+void GesturePreferencesInstance::on_help() {
+    if (tooltip_ == nullptr || help_button_ == nullptr || help_visible_) return;
+
+    SendMessageW(tooltip_, TTM_POP, 0, 0);
+    RECT client_rect = {};
+    GetClientRect(hwnd_, &client_rect);
+    int tooltip_width = client_rect.right - client_rect.left - 2 * scale(4);
+    if (tooltip_width > scale(360)) tooltip_width = scale(360);
+    if (tooltip_width > 0) SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, tooltip_width);
+
+    RECT button_rect = {};
+    GetWindowRect(help_button_, &button_rect);
+    const int gap = scale(4);
+    int x = button_rect.left;
+    int y = button_rect.bottom + gap;
+    SendMessageW(tooltip_, TTM_TRACKPOSITION, 0, MAKELPARAM(x, y));
+
+    TOOLINFOW help_tool = {};
+    help_tool.cbSize = sizeof(help_tool);
+    help_tool.hwnd = hwnd_;
+    help_tool.uId = kHelpTrackingToolId;
+    SendMessageW(tooltip_, TTM_TRACKACTIVATE, TRUE, reinterpret_cast<LPARAM>(&help_tool));
+    help_visible_ = true;
+
+    // После показа размер известен: сперва пытаемся оставить справку под
+    // маркером, затем переносим её выше и ограничиваем клиентской областью.
+    RECT tooltip_rect = {};
+    if (GetWindowRect(tooltip_, &tooltip_rect)) {
+        const int width = tooltip_rect.right - tooltip_rect.left;
+        const int height = tooltip_rect.bottom - tooltip_rect.top;
+        MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&client_rect), 2);
+        if (x + width > client_rect.right) x = client_rect.right - width;
+        if (y + height > client_rect.bottom) y = button_rect.top - height - gap;
+        if (x < client_rect.left) x = client_rect.left;
+        if (y < client_rect.top) y = client_rect.top;
+        SendMessageW(tooltip_, TTM_TRACKPOSITION, 0, MAKELPARAM(x, y));
+    }
+}
+
+void GesturePreferencesInstance::set_tooltips_active(bool active) {
+    if (tooltip_ == nullptr || !IsWindow(tooltip_)) return;
+    if (!active) hide_tracking_help();
+    SendMessageW(tooltip_, TTM_ACTIVATE, active ? TRUE : FALSE, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1356,28 +1549,28 @@ int GesturePreferencesInstance::text_width(const wchar_t* text) const {
 
 void GesturePreferencesInstance::layout() {
     if (hwnd_ == nullptr || list_ == nullptr) return;
+    hide_tracking_help();
 
     RECT client = {};
     GetClientRect(hwnd_, &client);
     const int width = client.right - client.left;
     const int height = client.bottom - client.top;
     if (width <= 0 || height <= 0) return;
+    if (tooltip_ != nullptr) SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, scale(360));
 
     // --- общие метрики (в единицах 96 DPI, масштабируются через scale()) ---
     const int margin = scale(10);
-    const int top_margin = scale(6);
     const int gap = scale(6);
     const int label_height = scale(14);
     const int control_height = scale(22);
 
-    // Встроенная шапка находится внутри рамки таблицы, как у ListView.
-    const int list_top = top_margin;
+    // Клиентская область страницы уже учитывает inset хоста; собственную
+    // рамку таблицы ставим непосредственно на её верхнюю кромку.
+    const int list_top = 0;
 
     // --- крестовина (D-Pad) -------------------------------------------------
-    // Диагонали занимают углы: UL/UR находятся выше ↑, а DL/DR — ниже ↓.
-    // Центральный ряд по-прежнему: [←][BS][→].
+    // Квадратные цели 38 DIP образуют непрерывную сетку 3×3 с BS в центре.
     const int cell = scale(38);
-    const int cell_gap = scale(4);
 
     // Ширины подписей left/right берём по фактическому тексту: фиксированные
     // 44 px сдвигали крестовину вправо и слово "left" не попадало на одну
@@ -1388,9 +1581,7 @@ void GesturePreferencesInstance::layout() {
     if (side_right < scale(24)) side_right = scale(24);
     const int label_gap = scale(6);
 
-    // Нижние диагонали делят строку с подписью down, но высоту задаёт кнопка.
-    const int pad_height = label_height + control_height + cell_gap + control_height + cell_gap +
-                           control_height + control_height;
+    const int pad_height = 3 * cell;
 
     // --- wheel / rocker / stroke / галочки ----------------------------------
     const int wheel_height = control_height + label_height;          // кнопки + подписи up/down
@@ -1428,7 +1619,7 @@ void GesturePreferencesInstance::layout() {
     const int pad_x = margin + side_left + label_gap;
 
     // Правый край крестовины (с подписью "right") задаёт ширину левой колонки.
-    const int pad_right = pad_x + 3 * cell + 2 * cell_gap + label_gap + side_right;
+    const int pad_right = pad_x + 3 * cell + label_gap + side_right;
     const int left_width = pad_right - margin;
 
     // Остальное отдаём форме: поля Gesture/Group/Command/Place получаются
@@ -1482,13 +1673,14 @@ void GesturePreferencesInstance::layout() {
         }
     }
 
-    // --- правая колонка: 4 строки формы + кнопки + подсказка ----------------
+    // --- правая колонка: 4 строки формы + кнопки ---------------------------
     const int row_step = control_height + scale(6);
-    const int hint_height = label_height * 3 + scale(4);
     const int right_content_height = 4 * row_step + scale(8) +
                                      button_rows * control_height + (button_rows - 1) * gap +
-                                     scale(6) + hint_height;
+                                     scale(6);
 
+    // Возвращаем таблице фактически освобождённую высоту. Если нижнюю область
+    // ограничивает левая колонка, её контролы не сжимаются ради формального +hint.
     const int lower_height = left_content_height > right_content_height ? left_content_height
                                                                         : right_content_height;
 
@@ -1509,40 +1701,45 @@ void GesturePreferencesInstance::layout() {
     // клиентской области таблицы (без рамки и вертикального скроллбара).
     list_control_.refresh();
 
-    // Подпись "Всего привязок" - отдельный Static, над крестовиной.
-    MoveWindow(count_label_, margin + scale(6), count_top, list_width, count_height, TRUE);
+    // Счётчик, режим группировки и Help делят существующую строку, поэтому
+    // дополнительные элементы не отнимают высоту у таблицы.
+    const int help_width = scale(20);
+    int group_width = text_width(L"Group by category") + scale(24);
+    if (group_width < scale(110)) group_width = scale(110);
+    const int help_x = width - margin - help_width;
+    const int group_x = help_x - gap - group_width;
+    const int count_x = margin + scale(6);
+    int count_width = group_x - gap - count_x;
+    if (count_width < 0) count_width = 0;
+    MoveWindow(count_label_, count_x, count_top, count_width, count_height, TRUE);
+    MoveWindow(group_by_category_check_, group_x, count_top, group_width, count_height, TRUE);
+    MoveWindow(help_button_, help_x, count_top, help_width, count_height, TRUE);
 
     const int lower_top = count_top + count_height + count_gap;
 
     // --- левая колонка ------------------------------------------------------
-    const int pad_center = pad_x + cell + cell_gap + cell / 2;   // центр колонки BS
-    const int up_x = pad_center - cell / 2;
-    const int left_x = pad_x;
-    const int bs_x = pad_x + cell + cell_gap;
-    const int right_x = pad_x + 2 * (cell + cell_gap);
-    const int down_x = up_x;
+    const int pad_top = lower_top;
+    const int middle_x = pad_x + cell;
+    const int right_x = pad_x + 2 * cell;
 
-    int y = lower_top;
-    MoveWindow(dir_up_left_, left_x, y, cell, control_height, TRUE);
-    MoveWindow(up_label_, up_x, y, cell, label_height, TRUE);
-    MoveWindow(dir_up_right_, right_x, y, cell, control_height, TRUE);
-    y += label_height;
-    MoveWindow(dir_up_, up_x, y, cell, control_height, TRUE);
-    y += control_height + cell_gap;
+    MoveWindow(dir_up_left_, pad_x, pad_top, cell, cell, TRUE);
+    MoveWindow(dir_up_, middle_x, pad_top, cell, cell, TRUE);
+    MoveWindow(dir_up_right_, right_x, pad_top, cell, cell, TRUE);
 
-    MoveWindow(left_label_, margin, y, side_left, control_height, TRUE);
-    MoveWindow(dir_left_, left_x, y, cell, control_height, TRUE);
-    MoveWindow(dir_backspace_, bs_x, y, cell, control_height, TRUE);
-    MoveWindow(dir_right_, right_x, y, cell, control_height, TRUE);
-    MoveWindow(right_label_, right_x + cell + label_gap, y, side_right, control_height, TRUE);
-    y += control_height + cell_gap;
+    const int middle_y = pad_top + cell;
+    const int side_label_y = middle_y + (cell - control_height) / 2;
+    MoveWindow(left_label_, margin, side_label_y, side_left, control_height, TRUE);
+    MoveWindow(dir_left_, pad_x, middle_y, cell, cell, TRUE);
+    MoveWindow(dir_backspace_, middle_x, middle_y, cell, cell, TRUE);
+    MoveWindow(dir_right_, right_x, middle_y, cell, cell, TRUE);
+    MoveWindow(right_label_, right_x + cell + label_gap, side_label_y, side_right, control_height, TRUE);
 
-    MoveWindow(dir_down_, down_x, y, cell, control_height, TRUE);
-    y += control_height;
-    MoveWindow(dir_down_left_, left_x, y, cell, control_height, TRUE);
-    MoveWindow(down_label_, down_x, y, cell, label_height, TRUE);
-    MoveWindow(dir_down_right_, right_x, y, cell, control_height, TRUE);
-    y += control_height + pad_to_wheel_gap;
+    const int bottom_y = pad_top + 2 * cell;
+    MoveWindow(dir_down_left_, pad_x, bottom_y, cell, cell, TRUE);
+    MoveWindow(dir_down_, middle_x, bottom_y, cell, cell, TRUE);
+    MoveWindow(dir_down_right_, right_x, bottom_y, cell, cell, TRUE);
+
+    int y = pad_top + pad_height + pad_to_wheel_gap;
 
     // --- wheel: подпись слева, кнопки в один ряд, подписи up/down под ними --
     MoveWindow(wheel_label_, margin, y, scale(52), control_height, TRUE);
@@ -1636,13 +1833,6 @@ void GesturePreferencesInstance::layout() {
         MoveWindow(button_specs[i].hwnd, row_x[row], y, button_widths[i], control_height, TRUE);
         row_x[row] += button_widths[i] + gap;
     }
-
-    const int buttons_bottom = buttons_y + button_rows * control_height + (button_rows - 1) * gap;
-
-    if (hint_label_ != nullptr) {
-        MoveWindow(hint_label_, form_x, buttons_bottom + scale(6), form_width,
-                   hint_height, TRUE);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1660,6 +1850,13 @@ void GesturePreferencesInstance::apply_theme() {
 
     if (control_brush_ != nullptr) DeleteObject(control_brush_);
     control_brush_ = CreateSolidBrush(dark ? RGB(45, 45, 45) : GetSysColor(COLOR_WINDOW));
+
+    if (tooltip_ != nullptr) {
+        const COLORREF tooltip_background = dark ? RGB(45, 45, 45) : GetSysColor(COLOR_INFOBK);
+        const COLORREF tooltip_text = dark ? RGB(235, 235, 235) : GetSysColor(COLOR_INFOTEXT);
+        SendMessageW(tooltip_, TTM_SETTIPBKCOLOR, tooltip_background, 0);
+        SendMessageW(tooltip_, TTM_SETTIPTEXTCOLOR, tooltip_text, 0);
+    }
 
     apply_list_theme();
 
@@ -1736,28 +1933,12 @@ void GesturePreferencesInstance::refresh_list() {
         manual_rows.push_back(std::move(row));
     }
 
-    rows_.clear();
-    if (sort.column == GestureSortColumn::none) {
-        const wchar_t* previous_group_title = nullptr;
-        rows_.reserve(manual_rows.size() + 4);
-        for (auto& row : manual_rows) {
-            const wchar_t* group_title = gesture_category_title(row.gesture_category);
-            if (previous_group_title == nullptr || wcscmp(previous_group_title, group_title) != 0) {
-                GestureListRow header;
-                header.is_header = true;
-                header.header = group_title;
-                rows_.push_back(std::move(header));
-                previous_group_title = group_title;
-            }
-            rows_.push_back(std::move(row));
-        }
-    } else {
-        rows_ = make_gesture_list_view(manual_rows, sort);
-        for (auto& row : rows_) {
-            row.gesture = std::wstring(gesture_category_cell_prefix(row.gesture_category)) + row.gesture;
-        }
+    rows_ = make_gesture_list_view(manual_rows, sort, group_by_category_);
+    for (auto& row : rows_) {
+        if (row.is_header) row.header = gesture_category_title(row.gesture_category);
     }
 
+    list_control_.set_category_chips(!group_by_category_);
     list_control_.set_rows(&rows_);
     list_control_.refresh();
 
@@ -1769,7 +1950,7 @@ void GesturePreferencesInstance::refresh_list() {
     if (count_label_ != nullptr) {
         std::wstring text = L"Bindings: " + std::to_wstring(settings_.bindings.size()) + L" - ";
         if (sort.column == GestureSortColumn::none) {
-            text += L"Manual order";
+            text += group_by_category_ ? L"Manual order within groups" : L"Manual order";
         } else {
             switch (sort.column) {
             case GestureSortColumn::gesture: text += L"Gesture"; break;
@@ -2201,6 +2382,43 @@ LRESULT CALLBACK GesturePreferencesInstance::command_list_subclass_proc(
     return DefSubclassProc(hwnd, msg, wparam, lparam);
 }
 
+LRESULT CALLBACK GesturePreferencesInstance::help_button_subclass_proc(
+    HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UINT_PTR subclass_id, DWORD_PTR ref_data) {
+    auto* self = reinterpret_cast<GesturePreferencesInstance*>(ref_data);
+
+    switch (msg) {
+    case WM_SETFOCUS:
+        if (self != nullptr) self->on_help();
+        break;
+    case WM_KILLFOCUS:
+    case WM_MOUSELEAVE:
+        if (self != nullptr) self->hide_tracking_help();
+        break;
+    case WM_MOUSEMOVE: {
+        TRACKMOUSEEVENT tracking = {};
+        tracking.cbSize = sizeof(tracking);
+        tracking.dwFlags = TME_LEAVE;
+        tracking.hwndTrack = hwnd;
+        TrackMouseEvent(&tracking);
+        break;
+    }
+    case WM_KEYDOWN:
+        if (wparam == VK_ESCAPE && self != nullptr && self->help_visible_) {
+            self->hide_tracking_help();
+            return 0;
+        }
+        break;
+    case WM_NCDESTROY:
+        RemoveWindowSubclass(hwnd, help_button_subclass_proc, subclass_id);
+        if (self != nullptr) self->help_button_ = nullptr;
+        break;
+    default:
+        break;
+    }
+
+    return DefSubclassProc(hwnd, msg, wparam, lparam);
+}
+
 // ---------------------------------------------------------------------------
 //  Оконная процедура
 // ---------------------------------------------------------------------------
@@ -2269,9 +2487,70 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
         return reinterpret_cast<LRESULT>(control_brush_);
     }
 
+    case WM_DRAWITEM: {
+        const auto* draw = reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
+        if (draw->CtlType == ODT_BUTTON && draw->CtlID == kIdHelp) {
+            HBRUSH background = (draw->itemState & ODS_SELECTED) != 0 && control_brush_ != nullptr
+                ? control_brush_
+                : background_brush_;
+            if (background == nullptr) background = GetSysColorBrush(COLOR_BTNFACE);
+            FillRect(draw->hDC, &draw->rcItem, background);
+            SetBkMode(draw->hDC, TRANSPARENT);
+            SetTextColor(draw->hDC, (draw->itemState & ODS_DISABLED) != 0
+                ? GetSysColor(COLOR_GRAYTEXT)
+                : text_color_);
+            HGDIOBJ old_font = SelectObject(draw->hDC, font_);
+            RECT marker = draw->rcItem;
+            DrawTextW(draw->hDC, L"?", -1, &marker,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(draw->hDC, old_font);
+            if ((draw->itemState & ODS_FOCUS) != 0) {
+                RECT focus = draw->rcItem;
+                InflateRect(&focus, -scale(2), -scale(2));
+                DrawFocusRect(draw->hDC, &focus);
+            }
+            return TRUE;
+        }
+        break;
+    }
+
+    case WM_PARENTNOTIFY: {
+        const UINT child_message = LOWORD(wparam);
+        if (child_message == WM_LBUTTONDOWN || child_message == WM_RBUTTONDOWN) {
+            const HWND clicked = reinterpret_cast<HWND>(lparam);
+            if (clicked != help_button_) hide_tracking_help();
+        }
+        break;
+    }
+
+    case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+        hide_tracking_help();
+        break;
+
+    case WM_KEYDOWN:
+        if (wparam == VK_ESCAPE && help_visible_) {
+            hide_tracking_help();
+            return 0;
+        }
+        break;
+
     case WM_COMMAND: {
         const int id = LOWORD(wparam);
         const int code = HIWORD(wparam);
+        const bool is_combo = id == kIdGroupCombo || id == kIdCommandCombo || id == kIdPlaceCombo;
+
+        if (is_combo && code == CBN_DROPDOWN) {
+            if (id == kIdCommandCombo) install_command_list_scroll_handler();
+            // Не даём tooltip перекрыть раскрытый список или появиться поверх него.
+            set_tooltips_active(false);
+            return 0;
+        }
+        if (is_combo && code == CBN_CLOSEUP) {
+            set_tooltips_active(true);
+            return 0;
+        }
+        if (help_visible_ && id != kIdHelp) hide_tracking_help();
 
         switch (id) {
         case kIdDirUp: if (code == BN_CLICKED) on_direction(Token::up); return 0;
@@ -2289,10 +2568,6 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
         case kIdRockerRightLeft: if (code == BN_CLICKED) on_direction(Token::rocker_right_left); return 0;
         case kIdRockerLeftRight: if (code == BN_CLICKED) on_direction(Token::rocker_left_right); return 0;
 
-        case kIdCommandCombo:
-            if (code == CBN_DROPDOWN) install_command_list_scroll_handler();
-            return 0;
-
         case kIdGroupCombo: if (code == CBN_SELCHANGE) on_group_changed(); return 0;
 
         case kIdAdd: if (code == BN_CLICKED) on_add(); return 0;
@@ -2300,6 +2575,13 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
         case kIdDelete: if (code == BN_CLICKED) on_delete(); return 0;
         case kIdMoveUp: if (code == BN_CLICKED) on_move(-1); return 0;
         case kIdMoveDown: if (code == BN_CLICKED) on_move(1); return 0;
+        case kIdGroupByCategory:
+            if (code == BN_CLICKED) {
+                group_by_category_ = Button_GetCheck(group_by_category_check_) == BST_CHECKED;
+                refresh_list();
+            }
+            return 0;
+        case kIdHelp: if (code == BN_CLICKED) on_help(); return 0;
 
         case kIdStrokeEdit: if (code == EN_CHANGE) on_settings_control_changed(); return 0;
         case kIdDisable:

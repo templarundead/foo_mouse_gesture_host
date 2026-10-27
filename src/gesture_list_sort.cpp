@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <utility>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -110,16 +111,41 @@ int compare_gesture_list_rows(const GestureListRow& left, const GestureListRow& 
 }
 
 std::vector<GestureListRow> make_gesture_list_view(const std::vector<GestureListRow>& manual_rows,
-                                                   GestureSortState sort) {
+                                                   GestureSortState sort, bool group_by_category) {
     std::vector<GestureListRow> view = manual_rows;
-    if (sort.column == GestureSortColumn::none) return view;
+    if (sort.column != GestureSortColumn::none) {
+        std::stable_sort(view.begin(), view.end(), [sort](const GestureListRow& left,
+                                                         const GestureListRow& right) {
+            const int result = compare_gesture_list_rows(left, right, sort.column);
+            return sort.direction == GestureSortDirection::descending ? result > 0 : result < 0;
+        });
+    }
+    if (!group_by_category) return view;
 
-    std::stable_sort(view.begin(), view.end(), [sort](const GestureListRow& left,
-                                                     const GestureListRow& right) {
-        const int result = compare_gesture_list_rows(left, right, sort.column);
-        return sort.direction == GestureSortDirection::descending ? result > 0 : result < 0;
-    });
-    return view;
+    constexpr GestureCategory kCategoryOrder[] = {
+        GestureCategory::directional,
+        GestureCategory::wheel_up,
+        GestureCategory::wheel_down,
+        GestureCategory::rocker,
+    };
+
+    std::vector<GestureListRow> grouped;
+    grouped.reserve(view.size() + 4);
+    for (const GestureCategory category : kCategoryOrder) {
+        const auto first = std::find_if(view.begin(), view.end(), [category](const GestureListRow& row) {
+            return row.gesture_category == category;
+        });
+        if (first == view.end()) continue;
+
+        GestureListRow header;
+        header.is_header = true;
+        header.gesture_category = category;
+        grouped.push_back(std::move(header));
+        for (const auto& row : view) {
+            if (row.gesture_category == category) grouped.push_back(row);
+        }
+    }
+    return grouped;
 }
 
 int gesture_row_for_binding(const std::vector<GestureListRow>& rows, int binding_index) {

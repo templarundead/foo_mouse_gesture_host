@@ -52,10 +52,12 @@ GestureSortState next_gesture_sort_state(GestureSortState current, GestureSortCo
 int compare_gesture_list_rows(const GestureListRow& left, const GestureListRow& right,
                               GestureSortColumn column);
 
-//! Возвращает отдельное представление. Manual order - точная копия исходных строк;
-//! stable_sort не использует binding_index как скрытый tie-break.
+//! Возвращает отдельное представление; stable_sort не использует binding_index
+//! как скрытый tie-break. В grouped mode категории идут в стабильном порядке,
+//! а выбранная сортировка применяется внутри каждой группы.
 std::vector<GestureListRow> make_gesture_list_view(const std::vector<GestureListRow>& manual_rows,
-                                                   GestureSortState sort);
+                                                   GestureSortState sort,
+                                                   bool group_by_category = false);
 
 int gesture_row_for_binding(const std::vector<GestureListRow>& rows, int binding_index);
 

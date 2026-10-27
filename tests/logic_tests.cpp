@@ -504,6 +504,22 @@ std::vector<int> sort_binding_order(const std::vector<mgh::GestureListRow>& rows
     return order;
 }
 
+std::vector<int> data_binding_order(const std::vector<mgh::GestureListRow>& rows) {
+    std::vector<int> order;
+    for (const auto& row : rows) {
+        if (!row.is_header) order.push_back(row.binding_index);
+    }
+    return order;
+}
+
+std::vector<mgh::GestureCategory> group_header_categories(const std::vector<mgh::GestureListRow>& rows) {
+    std::vector<mgh::GestureCategory> categories;
+    for (const auto& row : rows) {
+        if (row.is_header) categories.push_back(row.gesture_category);
+    }
+    return categories;
+}
+
 void test_gesture_list_sort_state_and_gesture() {
     CHECK_TRUE(mgh::gesture_sort_column_from_index(0) == mgh::GestureSortColumn::gesture);
     CHECK_TRUE(mgh::gesture_sort_column_from_index(1) == mgh::GestureSortColumn::command);
@@ -671,6 +687,106 @@ void test_gesture_list_sort_view_and_selection() {
         CHECK_TRUE(view.size() == 1);
         CHECK_TRUE(mgh::gesture_row_for_binding(view, 0) == 0);
     }
+}
+
+void test_gesture_list_grouping() {
+    const std::vector<mgh::GestureBinding> bindings = {
+        { "U", "main", "Command/Zulu", "main_window" },
+        { "WU", "main", "Command/Wheel up", "playlist" },
+        { "D", "main", "Command/Alpha", "main_window" },
+        { "R+L", "main", "Command/Rocker", "now_playing" },
+        { "WD", "main", "Command/Wheel down", "playlist" },
+    };
+    const auto original_bindings = bindings;
+    const auto manual = make_sort_rows(bindings);
+    const auto original_order = sort_binding_order(manual);
+    const std::vector<mgh::GestureCategory> expected_headers = {
+        mgh::GestureCategory::directional,
+        mgh::GestureCategory::wheel_up,
+        mgh::GestureCategory::wheel_down,
+        mgh::GestureCategory::rocker,
+    };
+
+    const auto grouped_manual = mgh::make_gesture_list_view(manual, {}, true);
+    CHECK_TRUE(grouped_manual.size() == bindings.size() + expected_headers.size());
+    CHECK_TRUE(group_header_categories(grouped_manual) == expected_headers);
+    CHECK_TRUE(data_binding_order(grouped_manual) == std::vector<int>({ 0, 2, 1, 4, 3 }));
+
+    const auto command_ascending = mgh::make_gesture_list_view(
+        manual, { mgh::GestureSortColumn::command, mgh::GestureSortDirection::ascending }, true);
+    CHECK_TRUE(group_header_categories(command_ascending) == expected_headers);
+    CHECK_TRUE(data_binding_order(command_ascending) == std::vector<int>({ 2, 0, 1, 4, 3 }));
+
+    const std::vector<mgh::GestureSortState> states = {
+        {},
+        { mgh::GestureSortColumn::gesture, mgh::GestureSortDirection::ascending },
+        { mgh::GestureSortColumn::gesture, mgh::GestureSortDirection::descending },
+        { mgh::GestureSortColumn::command, mgh::GestureSortDirection::ascending },
+        { mgh::GestureSortColumn::command, mgh::GestureSortDirection::descending },
+        { mgh::GestureSortColumn::place, mgh::GestureSortDirection::ascending },
+        { mgh::GestureSortColumn::place, mgh::GestureSortDirection::descending },
+    };
+
+    for (const auto state : states) {
+        const auto grouped = mgh::make_gesture_list_view(manual, state, true);
+        CHECK_TRUE(group_header_categories(grouped) == expected_headers);
+        const auto data_order = data_binding_order(grouped);
+        CHECK_TRUE(data_order.size() == bindings.size());
+        CHECK_TRUE(std::set<int>(data_order.begin(), data_order.end()).size() == bindings.size());
+        for (const auto& row : grouped) {
+            if (row.is_header) {
+                CHECK_TRUE(row.binding_index == -1);
+            } else {
+                CHECK_TRUE(row.binding_index >= 0);
+            }
+        }
+        for (std::size_t binding = 0; binding < bindings.size(); ++binding) {
+            const int display = mgh::gesture_row_for_binding(grouped, static_cast<int>(binding));
+            CHECK_TRUE(display >= 0);
+            if (display >= 0) {
+                CHECK_TRUE(!grouped[static_cast<std::size_t>(display)].is_header);
+                CHECK_TRUE(grouped[static_cast<std::size_t>(display)].binding_index ==
+                           static_cast<int>(binding));
+            }
+        }
+
+        const auto flat = mgh::make_gesture_list_view(manual, state, false);
+        CHECK_TRUE(flat.size() == manual.size());
+        CHECK_TRUE(group_header_categories(flat).empty());
+        for (const auto& row : flat) {
+            CHECK_TRUE(!row.is_header);
+            CHECK_TRUE(row.binding_index >= 0);
+            if (row.binding_index >= 0) {
+                CHECK_TRUE(row.gesture == manual[static_cast<std::size_t>(row.binding_index)].gesture);
+            }
+        }
+        for (const auto category : expected_headers) {
+            std::vector<int> expected_group_order;
+            std::vector<int> actual_group_order;
+            for (const auto& row : flat) {
+                if (row.gesture_category == category) expected_group_order.push_back(row.binding_index);
+            }
+            for (const auto& row : grouped) {
+                if (!row.is_header && row.gesture_category == category) {
+                    actual_group_order.push_back(row.binding_index);
+                }
+            }
+            CHECK_TRUE(actual_group_order == expected_group_order);
+        }
+        CHECK_TRUE(sort_binding_order(manual) == original_order);
+        CHECK_TRUE(bindings == original_bindings);
+    }
+
+    const std::vector<mgh::GestureListRow> directional_only = { manual[0], manual[2] };
+    const auto directional_grouped = mgh::make_gesture_list_view(directional_only, {}, true);
+    CHECK_TRUE(directional_grouped.size() == 3);
+    CHECK_TRUE(group_header_categories(directional_grouped) ==
+               std::vector<mgh::GestureCategory>({ mgh::GestureCategory::directional }));
+    CHECK_TRUE(data_binding_order(directional_grouped) == std::vector<int>({ 0, 2 }));
+
+    const std::vector<mgh::GestureListRow> empty;
+    CHECK_TRUE(mgh::make_gesture_list_view(empty, {}, true).empty());
+    CHECK_TRUE(mgh::make_gesture_list_view(empty, {}, false).empty());
 }
 
 mgh::BindingSnapshot make_session_snapshot(const std::vector<std::string>& gestures) {
@@ -916,6 +1032,7 @@ int main(int argc, char** argv) {
     test_gesture_list_sort_state_and_gesture();
     test_gesture_list_sort_command_place_and_ties();
     test_gesture_list_sort_view_and_selection();
+    test_gesture_list_grouping();
     test_session_idle_drag_and_reconcile();
     test_session_rocker();
     test_session_wheel_and_fractional_delta();
