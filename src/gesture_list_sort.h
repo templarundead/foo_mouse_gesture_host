@@ -100,6 +100,11 @@ GestureEditorState make_edit_editor_state(const GestureBinding& binding, int bin
 void refresh_editor_dirty(GestureEditorState& editor);
 void discard_editor_changes(GestureEditorState& editor);
 
+//! Восстанавливает process-session draft без изменения persisted config.
+//! Если Edit target исчез или отличается от baseline, возвращает New с тем же draft.
+GestureEditorState restore_editor_draft(const GestureEditorState& saved,
+                                        const std::vector<GestureBinding>& bindings);
+
 //! Дубликат определяется пользовательскими полями, а не служебным node_path.
 bool has_exact_binding_duplicate(const std::vector<GestureBinding>& bindings,
                                  const GestureBinding& candidate, int ignore_index = -1);

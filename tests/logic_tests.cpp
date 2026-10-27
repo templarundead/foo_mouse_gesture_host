@@ -1057,6 +1057,52 @@ void test_editor_guard_decisions() {
     CHECK_TRUE(!editor.dirty);
 }
 
+void test_editor_session_restore() {
+    std::vector<mgh::GestureBinding> bindings = {
+        { "U", "main", "Command/Up", "main_window" },
+        { "D", "main", "Command/Down", "main_window" },
+    };
+
+    auto saved = mgh::make_edit_editor_state(bindings[0], 0);
+    saved.draft.gesture = "R";
+    mgh::refresh_editor_dirty(saved);
+
+    auto restored = mgh::restore_editor_draft(saved, bindings);
+    CHECK_TRUE(restored.mode == mgh::GestureEditorMode::edit);
+    CHECK_TRUE(restored.binding_index == 0);
+    CHECK_TRUE(restored.draft.gesture == "R");
+    CHECK_TRUE(restored.baseline == bindings[0]);
+    CHECK_TRUE(restored.dirty);
+
+    bindings[0].command_path = "Command/Changed elsewhere";
+    restored = mgh::restore_editor_draft(saved, bindings);
+    CHECK_TRUE(restored.mode == mgh::GestureEditorMode::new_binding);
+    CHECK_TRUE(restored.binding_index == -1);
+    CHECK_TRUE(restored.draft.gesture == "R");
+    CHECK_TRUE(restored.dirty);
+    CHECK_TRUE(restored.draft != restored.baseline);
+
+    saved.binding_index = 99;
+    restored = mgh::restore_editor_draft(saved, bindings);
+    CHECK_TRUE(restored.mode == mgh::GestureEditorMode::new_binding);
+    CHECK_TRUE(restored.draft.gesture == "R");
+
+    auto new_draft = mgh::make_new_editor_state();
+    new_draft.draft.gesture = "WU";
+    new_draft.draft.command_path = "Command/Wheel";
+    mgh::refresh_editor_dirty(new_draft);
+    restored = mgh::restore_editor_draft(new_draft, bindings);
+    CHECK_TRUE(restored.mode == mgh::GestureEditorMode::new_binding);
+    CHECK_TRUE(restored.draft == new_draft.draft);
+    CHECK_TRUE(restored.baseline == new_draft.baseline);
+    CHECK_TRUE(restored.dirty);
+
+    const mgh::GestureEditorState idle;
+    CHECK_TRUE(mgh::restore_editor_draft(idle, bindings).mode == mgh::GestureEditorMode::idle);
+    const auto clean = mgh::make_edit_editor_state(bindings[1], 1);
+    CHECK_TRUE(mgh::restore_editor_draft(clean, bindings).mode == mgh::GestureEditorMode::idle);
+}
+
 mgh::BindingSnapshot make_session_snapshot(const std::vector<std::string>& gestures) {
     mgh::GestureSettings settings;
     for (const auto& gesture : gestures) {
@@ -1305,6 +1351,7 @@ int main(int argc, char** argv) {
     test_editor_command_state();
     test_editor_state_and_duplicates();
     test_editor_guard_decisions();
+    test_editor_session_restore();
     test_session_idle_drag_and_reconcile();
     test_session_rocker();
     test_session_wheel_and_fractional_delta();

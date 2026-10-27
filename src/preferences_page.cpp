@@ -10,6 +10,7 @@
 
 #include <cwchar>
 #include <functional>
+#include <optional>
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "uxtheme.lib")
@@ -48,9 +49,8 @@ enum ControlId : int {
     kIdDelete,
     kIdMoveUp,
     kIdMoveDown,
-    kIdEditorSave,
-    kIdEditorDiscard,
-    kIdEditorCancel,
+    kIdSaveDraft,
+    kIdDiscardDraft,
     kIdStrokeEdit,
     kIdStrokeSpin,
     kIdDisable,
@@ -76,6 +76,30 @@ struct EditorPendingAction {
     int binding_index = -1;
     int delta = 0;
 };
+
+enum class EditorGuardDecision : std::uint8_t {
+    save,
+    discard,
+    cancel,
+};
+
+const wchar_t* editor_action_label(EditorActionType type) {
+    switch (type) {
+    case EditorActionType::select: return L"select binding";
+    case EditorActionType::add: return L"Add";
+    case EditorActionType::new_binding: return L"New";
+    case EditorActionType::reset: return L"Reset";
+    case EditorActionType::apply: return L"Apply";
+    case EditorActionType::remove: return L"Delete";
+    case EditorActionType::move: return L"Move";
+    case EditorActionType::none: break;
+    }
+    return L"action";
+}
+
+// Preferences живёт в UI-потоке. Session переживает уничтожение страницы,
+// но не restart/forced shutdown/crash и не меняет persisted config.
+std::optional<GestureEditorState> g_editor_draft_session;
 
 //! Идентификаторы групп ListView (заголовки-разделители в таблице).
 enum ListGroupId : int {
@@ -228,6 +252,7 @@ public:
     void set_select_handler(select_handler handler) { on_select_ = std::move(handler); }
     void set_select_guard_handler(select_guard_handler handler) { on_select_guard_ = std::move(handler); }
     void set_sort_handler(sort_handler handler) { on_sort_ = std::move(handler); }
+    void set_owner_service(service_base* owner) { owner_service_ = owner; }
 
     void set_category_chips(bool show) {
         if (show_category_chips_ == show) return;
@@ -281,7 +306,15 @@ private:
         }
 
         auto* self = reinterpret_cast<GestureListControl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-        if (self != nullptr) return self->window_proc(msg, wparam, lparam);
+        if (self != nullptr) {
+            if (msg == WM_LBUTTONDOWN || msg == WM_KEYDOWN) {
+                // Только эти сообщения могут открыть guard. На WM_NCDESTROY
+                // нельзя поднимать refcount уже разрушаемого owner.
+                service_ptr_t<service_base> keep_alive(self->owner_service_);
+                return self->window_proc(msg, wparam, lparam);
+            }
+            return self->window_proc(msg, wparam, lparam);
+        }
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     }
 
@@ -546,6 +579,7 @@ private:
     select_handler on_select_;
     select_guard_handler on_select_guard_;
     sort_handler on_sort_;
+    service_base* owner_service_ = nullptr;
 };
 
 void GestureListControl::draw_row(HDC dc, const RECT& row_rect, const GestureListRow& row, bool selected) {
@@ -989,6 +1023,7 @@ private:
     void apply_list_theme();
 
     void load_from_settings();
+    void restore_editor_draft_session(const std::optional<GestureEditorState>& saved);
     void load_new_editor();
     void load_binding_editor(int binding_index);
     void sync_editor_controls();
@@ -1000,6 +1035,7 @@ private:
     void on_editor_changed();
     void sync_page_dirty(bool force_notify = false);
 
+    EditorGuardDecision show_editor_guard(const EditorPendingAction& action);
     void request_editor_action(const EditorPendingAction& action);
     void execute_editor_action(const EditorPendingAction& action);
     bool commit_editor_changes();
@@ -1114,9 +1150,8 @@ private:
     HWND delete_button_ = nullptr;
     HWND move_up_button_ = nullptr;
     HWND move_down_button_ = nullptr;
-    HWND save_button_ = nullptr;
-    HWND discard_button_ = nullptr;
-    HWND cancel_button_ = nullptr;
+    HWND save_draft_button_ = nullptr;
+    HWND discard_draft_button_ = nullptr;
 
     HWND stroke_edit_ = nullptr;
     HWND stroke_spin_ = nullptr;
@@ -1136,6 +1171,10 @@ private:
     bool dirty_ = false;
     bool committed_dirty_ = false;
     bool notified_editor_busy_ = false;
+    bool editor_guard_active_ = false;
+    bool draft_bar_shown_ = false;
+    bool draft_restored_ = false;
+    bool draft_restore_detached_ = false;
     bool updating_ = false;
     bool diagnostics_logged_ = false;
     bool pending_state_notify_ = false;
@@ -1167,6 +1206,7 @@ void GesturePreferencesInstance::register_window_class() {
 GesturePreferencesInstance::GesturePreferencesInstance(HWND parent,
                                                        preferences_page_callback::ptr callback)
     : callback_(callback) {
+    const auto draft_session = g_editor_draft_session;
     register_window_class();
 
     settings_ = GestureConfig::instance().load_from_storage();
@@ -1191,6 +1231,7 @@ GesturePreferencesInstance::GesturePreferencesInstance(HWND parent,
     // Пустая таблица после Apply - осознанная настройка, а не первый запуск.
     // Defaults восстанавливаются явной кнопкой Reset или самим хранилищем при первом запуске.
     load_from_settings();
+    restore_editor_draft_session(draft_session);
 
     layout();
 
@@ -1229,6 +1270,7 @@ fb2k::hwnd_t GesturePreferencesInstance::get_wnd() {
 }
 
 void GesturePreferencesInstance::apply() {
+    service_ptr_t<GesturePreferencesInstance> keep_alive(this);
     if (editor_.dirty) {
         request_editor_action({ EditorActionType::apply });
         return;
@@ -1246,6 +1288,7 @@ void GesturePreferencesInstance::apply() {
 }
 
 void GesturePreferencesInstance::reset() {
+    service_ptr_t<GesturePreferencesInstance> keep_alive(this);
     if (editor_.dirty) {
         request_editor_action({ EditorActionType::reset });
         return;
@@ -1346,6 +1389,7 @@ void GesturePreferencesInstance::create_children() {
                                  << static_cast<unsigned long>(GetLastError()) << ")";
     } else {
         list_control_.set_fonts(font_, header_font_, dpi_);
+        list_control_.set_owner_service(this);
         list_control_.set_select_guard_handler([this](int binding_index) {
             return on_list_selection_guard(binding_index);
         });
@@ -1407,9 +1451,10 @@ void GesturePreferencesInstance::create_children() {
     delete_button_ = make_button(L"Delete", kIdDelete);
     move_up_button_ = make_button(L"Up", kIdMoveUp);
     move_down_button_ = make_button(L"Down", kIdMoveDown);
-    save_button_ = make_button(L"Save", kIdEditorSave);
-    discard_button_ = make_button(L"Discard", kIdEditorDiscard);
-    cancel_button_ = make_button(L"Cancel", kIdEditorCancel);
+    save_draft_button_ = make_button(L"Save draft", kIdSaveDraft);
+    discard_draft_button_ = make_button(L"Discard draft", kIdDiscardDraft);
+    ShowWindow(save_draft_button_, SW_HIDE);
+    ShowWindow(discard_draft_button_, SW_HIDE);
 
     stroke_edit_ = make_edit(kIdStrokeEdit, ES_NUMBER | ES_RIGHT);
     stroke_spin_ = CreateWindowExW(0, UPDOWN_CLASSW, L"",
@@ -1497,11 +1542,10 @@ void GesturePreferencesInstance::create_tooltips() {
     add_tooltip(place_combo_, L"Place: choose the execution context for the command.");
 
     add_tooltip(new_button_, L"New: clear the editor after resolving any unsaved draft.");
-    add_tooltip(add_button_, L"Add New: add the current Gesture and Command as a binding.");
-    add_tooltip(update_button_, L"Update: replace the selected binding with the editor values.");
-    add_tooltip(save_button_, L"Save: commit the draft, then perform the pending action.");
-    add_tooltip(discard_button_, L"Discard: restore the baseline, then perform the pending action.");
-    add_tooltip(cancel_button_, L"Cancel: keep the current row and unsaved draft.");
+    add_tooltip(add_button_, L"Add New: stage a new binding on this page; Apply saves the page settings.");
+    add_tooltip(update_button_, L"Update: stage changes to the selected binding; Apply saves the page settings.");
+    add_tooltip(save_draft_button_, L"Save draft: Add/Update the draft and leave the busy state; Apply still saves the page.");
+    add_tooltip(discard_draft_button_, L"Discard draft: restore the baseline and leave the busy state.");
     add_tooltip(delete_button_, L"Delete: remove the selected binding.");
     add_tooltip(move_up_button_, L"Up: move earlier in flat Manual order; disabled in sorted or grouped views.");
     add_tooltip(move_down_button_, L"Down: move later in flat Manual order; disabled in sorted or grouped views.");
@@ -1709,7 +1753,7 @@ void GesturePreferencesInstance::layout() {
         int min_width;
     };
 
-    constexpr int kButtonCount = 9;
+    constexpr int kButtonCount = 6;
     const ButtonSpec button_specs[kButtonCount] = {
         { new_button_, L"New", 60 },
         { add_button_, L"Add New", 96 },
@@ -1717,9 +1761,6 @@ void GesturePreferencesInstance::layout() {
         { delete_button_, L"Delete", 72 },
         { move_up_button_, L"Up", 60 },
         { move_down_button_, L"Down", 60 },
-        { save_button_, L"Save", 60 },
-        { discard_button_, L"Discard", 72 },
-        { cancel_button_, L"Cancel", 72 },
     };
 
     const int button_padding = scale(14);
@@ -1753,12 +1794,27 @@ void GesturePreferencesInstance::layout() {
         }
     }
 
+    // Draft-bar существует только при dirty и не занимает постоянную высоту.
+    int save_draft_width = text_width(L"Save draft") + 2 * button_padding;
+    int discard_draft_width = text_width(L"Discard draft") + 2 * button_padding;
+    save_draft_width = save_draft_width > scale(96) ? save_draft_width : scale(96);
+    discard_draft_width = discard_draft_width > scale(110) ? discard_draft_width : scale(110);
+    const bool stack_draft_buttons = save_draft_width + gap + discard_draft_width > form_width_early;
+    if (stack_draft_buttons) {
+        save_draft_width = form_width_early;
+        discard_draft_width = form_width_early;
+    }
+    const int draft_rows = editor_.dirty ? (stack_draft_buttons ? 2 : 1) : 0;
+    const int draft_bar_height = editor_.dirty
+        ? draft_rows * control_height + (draft_rows - 1) * gap + scale(8)
+        : 0;
+
     // --- правая колонка: 4 строки формы + command status + кнопки ----------
     const int row_step = control_height + scale(6);
     const int command_status_height = scale(14);
     const int command_status_gap = scale(4);
     const int right_content_height = 4 * row_step + command_status_height + command_status_gap +
-                                     scale(8) + button_rows * control_height +
+                                     scale(8) + draft_bar_height + button_rows * control_height +
                                      (button_rows - 1) * gap + scale(6);
 
     // Возвращаем таблице фактически освобождённую высоту. Если нижнюю область
@@ -1906,10 +1962,22 @@ void GesturePreferencesInstance::layout() {
     SetWindowPos(place_combo_, nullptr, editor_x, place_y, editor_width, scale(160),
                  SWP_NOZORDER | SWP_NOACTIVATE);
 
+    int buttons_y = place_y + row_step + scale(8);
+    if (editor_.dirty) {
+        ShowWindow(save_draft_button_, SW_SHOW);
+        ShowWindow(discard_draft_button_, SW_SHOW);
+        MoveWindow(save_draft_button_, form_x, buttons_y, save_draft_width, control_height, TRUE);
+        const int discard_x = stack_draft_buttons ? form_x : form_x + save_draft_width + gap;
+        const int discard_y = stack_draft_buttons ? buttons_y + control_height + gap : buttons_y;
+        MoveWindow(discard_draft_button_, discard_x, discard_y, discard_draft_width, control_height, TRUE);
+        buttons_y += draft_rows * control_height + (draft_rows - 1) * gap + scale(8);
+    } else {
+        ShowWindow(save_draft_button_, SW_HIDE);
+        ShowWindow(discard_draft_button_, SW_HIDE);
+    }
+
     // Кнопки управления таблицей. Ширина каждой уже посчитана по тексту
     // (button_widths выше), ряды - жадно по доступной ширине (button_row_of).
-    const int buttons_y = place_y + row_step + scale(8);
-
     int row_x[kButtonCount] = {};
     for (int i = 0; i < button_rows; ++i) row_x[i] = form_x;
 
@@ -1994,8 +2062,31 @@ void GesturePreferencesInstance::load_from_settings() {
     update_buttons();
 }
 
+void GesturePreferencesInstance::restore_editor_draft_session(
+    const std::optional<GestureEditorState>& saved) {
+    if (!saved.has_value() || !saved->dirty) return;
+
+    GestureEditorState restored = restore_editor_draft(saved.value(), settings_.bindings);
+    if (restored.mode == GestureEditorMode::idle) return;
+
+    pending_action_ = {};
+    draft_restored_ = true;
+    draft_restore_detached_ = saved->mode == GestureEditorMode::edit &&
+                              restored.mode == GestureEditorMode::new_binding;
+    editor_ = std::move(restored);
+    if (editor_.mode == GestureEditorMode::edit) {
+        select_binding(editor_.binding_index);
+    } else {
+        list_control_.clear_selection();
+    }
+    sync_editor_controls();
+    sync_page_dirty(true);
+}
+
 void GesturePreferencesInstance::load_new_editor() {
     pending_action_ = {};
+    draft_restored_ = false;
+    draft_restore_detached_ = false;
     list_control_.clear_selection();
     editor_ = make_new_editor_state();
     sync_editor_controls();
@@ -2005,6 +2096,8 @@ void GesturePreferencesInstance::load_new_editor() {
 void GesturePreferencesInstance::load_binding_editor(int binding_index) {
     if (binding_index < 0 || binding_index >= static_cast<int>(settings_.bindings.size())) return;
     pending_action_ = {};
+    draft_restored_ = false;
+    draft_restore_detached_ = false;
     editor_ = make_edit_editor_state(settings_.bindings[static_cast<std::size_t>(binding_index)], binding_index);
     sync_editor_controls();
     sync_page_dirty();
@@ -2194,10 +2287,16 @@ void GesturePreferencesInstance::update_buttons() {
     EnableWindow(delete_button_, has_selection);
     EnableWindow(move_up_button_, can_move && has_selection && selected > 0);
     EnableWindow(move_down_button_, can_move && has_selection && selected + 1 < count);
-    EnableWindow(save_button_, editor_.dirty && valid_draft);
-    EnableWindow(discard_button_, editor_.dirty);
-    EnableWindow(cancel_button_, pending_action_.type != EditorActionType::none);
+    EnableWindow(save_draft_button_, editor_.dirty && valid_draft);
+    EnableWindow(discard_draft_button_, editor_.dirty);
     update_command_status();
+
+    if (draft_bar_shown_ != editor_.dirty) {
+        draft_bar_shown_ = editor_.dirty;
+        ShowWindow(save_draft_button_, draft_bar_shown_ ? SW_SHOW : SW_HIDE);
+        ShowWindow(discard_draft_button_, draft_bar_shown_ ? SW_SHOW : SW_HIDE);
+        layout();
+    }
 }
 
 void GesturePreferencesInstance::update_command_status() {
@@ -2228,21 +2327,16 @@ void GesturePreferencesInstance::update_command_status() {
 
     if (editor_.dirty) {
         if (pending_action_.type != EditorActionType::none) {
-            const wchar_t* action = L"action";
-            switch (pending_action_.type) {
-            case EditorActionType::select: action = L"select binding"; break;
-            case EditorActionType::add: action = L"Add"; break;
-            case EditorActionType::new_binding: action = L"New"; break;
-            case EditorActionType::reset: action = L"Reset"; break;
-            case EditorActionType::apply: action = L"Apply"; break;
-            case EditorActionType::remove: action = L"Delete"; break;
-            case EditorActionType::move: action = L"Move"; break;
-            default: break;
-            }
-            detail = std::wstring(L"Unsaved ") + action + L" — Save/Discard/Cancel; " + detail;
+            detail = std::wstring(L"Unsaved ") + editor_action_label(pending_action_.type) +
+                     L" — resolve the guard; " + detail;
         } else {
-            detail = L"Unsaved — Save/Discard before Apply/close; " + detail;
+            detail = L"Unsaved — use Save draft or Discard draft to leave busy; " + detail;
         }
+    }
+    if (draft_restored_ && editor_.dirty) {
+        detail = draft_restore_detached_
+            ? L"Restored draft; original Edit target changed — review it in New. " + detail
+            : L"Restored unsaved draft from the previous Preferences session. " + detail;
     }
 
     const wchar_t* mode = L"Idle";
@@ -2274,15 +2368,67 @@ void GesturePreferencesInstance::on_editor_changed() {
     update_buttons();
 }
 
+EditorGuardDecision GesturePreferencesInstance::show_editor_guard(const EditorPendingAction& action) {
+    if (hwnd_ == nullptr || !IsWindow(hwnd_)) return EditorGuardDecision::cancel;
+
+    const std::wstring content = std::wstring(L"Pending action: ") + editor_action_label(action.type) +
+        L".\r\n\r\nSave draft stages Add/Update; Discard draft restores the baseline. "
+        L"Apply remains the only commit of the whole Preferences page.";
+    const TASKDIALOG_BUTTON buttons[] = {
+        { IDYES, L"Save draft" },
+        { IDNO, L"Discard draft" },
+        { IDCANCEL, L"Отменить правку" },
+    };
+
+    TASKDIALOGCONFIG config = {};
+    config.cbSize = sizeof(config);
+    const HWND root = GetAncestor(hwnd_, GA_ROOT);
+    config.hwndParent = root != nullptr ? root : hwnd_;
+    config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+    config.pszWindowTitle = L"Mouse Gesture Host";
+    config.pszMainInstruction = L"Save the unsaved binding draft?";
+    config.pszContent = content.c_str();
+    config.cButtons = 3;
+    config.pButtons = buttons;
+    config.nDefaultButton = IDCANCEL;
+    config.pszMainIcon = TD_WARNING_ICON;
+
+    int pressed = IDCANCEL;
+    const HRESULT result = TaskDialogIndirect(&config, &pressed, nullptr, nullptr);
+    if (FAILED(result)) {
+        FB2K_console_formatter() << "Mouse Gesture Host: TaskDialogIndirect failed (HRESULT "
+                                 << static_cast<long>(result) << "); draft action cancelled";
+        return EditorGuardDecision::cancel;
+    }
+    if (pressed == IDYES) return EditorGuardDecision::save;
+    if (pressed == IDNO) return EditorGuardDecision::discard;
+    return EditorGuardDecision::cancel;
+}
+
 void GesturePreferencesInstance::request_editor_action(const EditorPendingAction& action) {
-    if (action.type == EditorActionType::none) return;
+    if (action.type == EditorActionType::none || editor_guard_active_) return;
     if (!editor_.dirty) {
         execute_editor_action(action);
         return;
     }
 
     pending_action_ = action;
-    update_buttons();
+    editor_guard_active_ = true;
+    const EditorGuardDecision decision = show_editor_guard(action);
+    editor_guard_active_ = false;
+
+    // Во время modal loop хост мог уничтожить окно вопреки busy. Session уже
+    // содержит draft; не обращаемся к уничтоженным controls.
+    if (hwnd_ == nullptr || !IsWindow(hwnd_)) {
+        pending_action_ = {};
+        return;
+    }
+
+    switch (decision) {
+    case EditorGuardDecision::save: on_save_editor(); break;
+    case EditorGuardDecision::discard: on_discard_editor(); break;
+    case EditorGuardDecision::cancel: on_cancel_editor_action(); break;
+    }
 }
 
 void GesturePreferencesInstance::execute_editor_action(const EditorPendingAction& action) {
@@ -2325,6 +2471,8 @@ void GesturePreferencesInstance::on_discard_editor() {
 
     const EditorPendingAction action = pending_action_;
     pending_action_ = {};
+    draft_restored_ = false;
+    draft_restore_detached_ = false;
     discard_editor_changes(editor_);
     sync_editor_controls();
     sync_page_dirty();
@@ -2563,6 +2711,12 @@ void GesturePreferencesInstance::set_dirty(bool dirty) {
 }
 
 void GesturePreferencesInstance::sync_page_dirty(bool force_notify) {
+    if (editor_.dirty) {
+        g_editor_draft_session = editor_;
+    } else {
+        g_editor_draft_session.reset();
+    }
+
     const bool combined_dirty = committed_dirty_ || editor_.dirty;
     if (!force_notify && dirty_ == combined_dirty && notified_editor_busy_ == editor_.dirty) return;
 
@@ -2722,7 +2876,14 @@ LRESULT CALLBACK GesturePreferencesInstance::window_proc_static(HWND hwnd, UINT 
     }
 
     auto* self = reinterpret_cast<GesturePreferencesInstance*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    if (self != nullptr) return self->window_proc(msg, wparam, lparam);
+    if (self != nullptr) {
+        if (msg == WM_COMMAND) {
+            // Удерживаем service на весь handler с возможным modal loop.
+            service_ptr_t<GesturePreferencesInstance> keep_alive(self);
+            return self->window_proc(msg, wparam, lparam);
+        }
+        return self->window_proc(msg, wparam, lparam);
+    }
 
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }
@@ -2866,9 +3027,8 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
         case kIdDelete: if (code == BN_CLICKED) on_delete(); return 0;
         case kIdMoveUp: if (code == BN_CLICKED) on_move(-1); return 0;
         case kIdMoveDown: if (code == BN_CLICKED) on_move(1); return 0;
-        case kIdEditorSave: if (code == BN_CLICKED) on_save_editor(); return 0;
-        case kIdEditorDiscard: if (code == BN_CLICKED) on_discard_editor(); return 0;
-        case kIdEditorCancel: if (code == BN_CLICKED) on_cancel_editor_action(); return 0;
+        case kIdSaveDraft: if (code == BN_CLICKED) on_save_editor(); return 0;
+        case kIdDiscardDraft: if (code == BN_CLICKED) on_discard_editor(); return 0;
         case kIdGroupByCategory:
             if (code == BN_CLICKED) {
                 group_by_category_ = Button_GetCheck(group_by_category_check_) == BST_CHECKED;

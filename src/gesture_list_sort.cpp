@@ -285,6 +285,33 @@ void discard_editor_changes(GestureEditorState& editor) {
     editor.dirty = false;
 }
 
+GestureEditorState restore_editor_draft(const GestureEditorState& saved,
+                                        const std::vector<GestureBinding>& bindings) {
+    if (saved.mode == GestureEditorMode::idle || !saved.dirty) return {};
+
+    if (saved.mode == GestureEditorMode::new_binding) {
+        GestureEditorState restored = saved;
+        restored.binding_index = -1;
+        refresh_editor_dirty(restored);
+        return restored;
+    }
+
+    const int index = saved.binding_index;
+    if (index >= 0 && index < static_cast<int>(bindings.size()) &&
+        bindings[static_cast<std::size_t>(index)] == saved.baseline) {
+        GestureEditorState restored = saved;
+        refresh_editor_dirty(restored);
+        return restored;
+    }
+
+    // Не привязываем draft к другой записи: пользователь explicitly решит,
+    // добавить ли его как новую привязку после восстановления.
+    GestureEditorState restored = make_new_editor_state();
+    restored.draft = saved.draft;
+    refresh_editor_dirty(restored);
+    return restored;
+}
+
 bool has_exact_binding_duplicate(const std::vector<GestureBinding>& bindings,
                                  const GestureBinding& candidate, int ignore_index) {
     for (std::size_t i = 0; i < bindings.size(); ++i) {
