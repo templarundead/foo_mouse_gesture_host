@@ -1,6 +1,6 @@
 #pragma once
 
-#include "gesture_config.h"
+#include "command_identity.h"
 
 namespace mgh {
 
@@ -60,5 +60,82 @@ std::vector<GestureListRow> make_gesture_list_view(const std::vector<GestureList
                                                    bool group_by_category = false);
 
 int gesture_row_for_binding(const std::vector<GestureListRow>& rows, int binding_index);
+
+enum class GestureRowNavigation : std::uint8_t {
+    first,
+    last,
+    previous,
+    next,
+    page_previous,
+    page_next,
+};
+
+//! Возвращает display row, пропуская headers; binding_index строк не меняется.
+int gesture_navigation_row(const std::vector<GestureListRow>& rows, int current_row,
+                           GestureRowNavigation navigation, int page_rows = 5);
+
+//! Перестановка разрешена только там, где display order совпадает с Manual order.
+bool can_move_gesture_bindings(GestureSortState sort, bool group_by_category);
+bool move_gesture_binding(std::vector<GestureBinding>& bindings, int binding_index, int delta,
+                          GestureSortState sort, bool group_by_category);
+
+enum class GestureEditorMode : std::uint8_t {
+    idle,
+    new_binding,
+    edit,
+};
+
+struct GestureEditorState {
+    GestureEditorMode mode = GestureEditorMode::idle;
+    //! Эфемерный ID в пределах открытой страницы, не persisted config field.
+    int binding_index = -1;
+    GestureBinding draft;
+    GestureBinding baseline;
+    bool dirty = false;
+};
+
+GestureEditorState make_new_editor_state(const std::string& group_id = "main",
+                                         const std::string& place_id = "main_window");
+GestureEditorState make_edit_editor_state(const GestureBinding& binding, int binding_index);
+void refresh_editor_dirty(GestureEditorState& editor);
+void discard_editor_changes(GestureEditorState& editor);
+
+//! Восстанавливает process-session draft без изменения persisted config.
+//! Если Edit target исчез или отличается от baseline, возвращает New с тем же draft.
+GestureEditorState restore_editor_draft(const GestureEditorState& saved,
+                                        const std::vector<GestureBinding>& bindings);
+
+//! Дубликат определяется пользовательскими полями, а не служебным node_path.
+bool has_exact_binding_duplicate(const std::vector<GestureBinding>& bindings,
+                                 const GestureBinding& candidate, int ignore_index = -1);
+
+enum class GestureEditorCommandState : std::uint8_t {
+    none,
+    valid,
+    unavailable,
+    conflict,
+};
+
+struct GestureEditorCommandStatus {
+    GestureEditorCommandState state = GestureEditorCommandState::none;
+    int catalog_index = -1;
+    std::string message = "Select command...";
+
+    bool is_selectable() const { return state == GestureEditorCommandState::valid && catalog_index >= 0; }
+};
+
+//! Обновляет только draft; индекс -1 означает явно пустой выбор команды.
+void select_editor_command(GestureBinding& draft, const std::vector<CatalogEntry>& catalog,
+                           int catalog_index);
+
+//! После смены группы сохраняет identity только при однозначном совпадении.
+//! Возвращает индекс команды в catalog либо -1; первый элемент не выбирается.
+int change_editor_group(GestureBinding& draft, const std::string& group_id,
+                        const std::vector<CatalogEntry>& catalog);
+
+//! Единые правила Add/Update: synthetic/conflict/unavailable строки не executable.
+GestureEditorCommandStatus validate_editor_command(const GestureBinding& draft,
+                                                    const std::vector<CatalogEntry>& catalog,
+                                                    int catalog_index);
 
 } // namespace mgh

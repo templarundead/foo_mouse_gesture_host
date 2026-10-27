@@ -789,6 +789,320 @@ void test_gesture_list_grouping() {
     CHECK_TRUE(mgh::make_gesture_list_view(empty, {}, false).empty());
 }
 
+void test_gesture_list_navigation_and_move_restrictions() {
+    const std::vector<mgh::GestureBinding> bindings = {
+        { "U", "main", "Command/Up", "main_window" },
+        { "WU", "main", "Command/Wheel up", "playlist" },
+        { "D", "main", "Command/Down", "main_window" },
+        { "R+L", "main", "Command/Rocker", "now_playing" },
+        { "WD", "main", "Command/Wheel down", "playlist" },
+    };
+    const auto manual = make_sort_rows(bindings);
+    const auto grouped = mgh::make_gesture_list_view(manual, {}, true);
+
+    const int first = mgh::gesture_navigation_row(grouped, 4, mgh::GestureRowNavigation::first);
+    const int last = mgh::gesture_navigation_row(grouped, 4, mgh::GestureRowNavigation::last);
+    CHECK_TRUE(first == 1);
+    CHECK_TRUE(last == 8);
+    CHECK_TRUE(grouped[static_cast<std::size_t>(first)].binding_index == 0);
+    CHECK_TRUE(grouped[static_cast<std::size_t>(last)].binding_index == 3);
+
+    // Down/Up пересекают header, но сохраняют физический binding_index.
+    const int down = mgh::gesture_navigation_row(grouped, 2, mgh::GestureRowNavigation::next);
+    const int up = mgh::gesture_navigation_row(grouped, down, mgh::GestureRowNavigation::previous);
+    CHECK_TRUE(down == 4);
+    CHECK_TRUE(up == 2);
+    CHECK_TRUE(grouped[static_cast<std::size_t>(down)].binding_index == 1);
+    CHECK_TRUE(grouped[static_cast<std::size_t>(up)].binding_index == 2);
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, last, mgh::GestureRowNavigation::next) == last);
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, first, mgh::GestureRowNavigation::previous) == first);
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, -1, mgh::GestureRowNavigation::next) == first);
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, -1, mgh::GestureRowNavigation::previous) == first);
+
+    // Headers не расходуют шаги PageUp/PageDown.
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, first, mgh::GestureRowNavigation::page_next, 2) == 4);
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, last, mgh::GestureRowNavigation::page_previous, 2) == 4);
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, -1, mgh::GestureRowNavigation::page_next, 1) == first);
+
+    mgh::GestureListRow header;
+    header.is_header = true;
+    const std::vector<mgh::GestureListRow> headers_only = { header, header };
+    const std::vector<mgh::GestureListRow> empty;
+    for (const auto* rows : { &headers_only, &empty }) {
+        CHECK_TRUE(mgh::gesture_navigation_row(*rows, -1, mgh::GestureRowNavigation::first) == -1);
+        CHECK_TRUE(mgh::gesture_navigation_row(*rows, -1, mgh::GestureRowNavigation::last) == -1);
+        CHECK_TRUE(mgh::gesture_navigation_row(*rows, -1, mgh::GestureRowNavigation::next) == -1);
+        CHECK_TRUE(mgh::gesture_navigation_row(*rows, -1, mgh::GestureRowNavigation::page_next) == -1);
+    }
+
+    const mgh::GestureSortState sorted = {
+        mgh::GestureSortColumn::gesture, mgh::GestureSortDirection::ascending
+    };
+    CHECK_TRUE(mgh::can_move_gesture_bindings({}, false));
+    CHECK_TRUE(!mgh::can_move_gesture_bindings({}, true));
+    CHECK_TRUE(!mgh::can_move_gesture_bindings(sorted, false));
+    CHECK_TRUE(!mgh::can_move_gesture_bindings(sorted, true));
+
+    auto moved = bindings;
+    CHECK_TRUE(mgh::move_gesture_binding(moved, 0, 1, {}, false));
+    CHECK_TRUE(moved[0].gesture == "WU");
+    CHECK_TRUE(moved[1].gesture == "U");
+    const auto after_move = moved;
+    CHECK_TRUE(!mgh::move_gesture_binding(moved, 0, -1, {}, false));
+    CHECK_TRUE(!mgh::move_gesture_binding(moved, static_cast<int>(moved.size()) - 1, 1, {}, false));
+    CHECK_TRUE(!mgh::move_gesture_binding(moved, 0, 1, sorted, false));
+    CHECK_TRUE(!mgh::move_gesture_binding(moved, 0, 1, {}, true));
+    CHECK_TRUE(moved == after_move);
+}
+
+mgh::CatalogEntry make_editor_catalog_entry(const char* path, const char* group, const char* guid,
+                                             bool selectable = true) {
+    mgh::CatalogEntry entry;
+    entry.path = path;
+    entry.group = group;
+    entry.command_guid = guid;
+    entry.selectable = selectable;
+    return entry;
+}
+
+void test_editor_command_state() {
+    const auto play = make_editor_catalog_entry("Playback/Play", "main", "guid-play");
+    const auto next = make_editor_catalog_entry("Playback/Next", "main", "guid-next");
+    const std::vector<mgh::CatalogEntry> main_catalog = { play, next };
+
+    mgh::GestureBinding draft{ "U", "main", "", "main_window" };
+    auto status = mgh::validate_editor_command(draft, main_catalog, -1);
+    CHECK_TRUE(status.state == mgh::GestureEditorCommandState::none);
+    CHECK_TRUE(!status.is_selectable());
+
+    mgh::select_editor_command(draft, main_catalog, 0);
+    status = mgh::validate_editor_command(draft, main_catalog, 0);
+    CHECK_TRUE(status.state == mgh::GestureEditorCommandState::valid);
+    CHECK_TRUE(status.is_selectable());
+    CHECK_TRUE(draft.command_path == "Playback/Play");
+
+    const std::vector<mgh::CatalogEntry> conflict_catalog = { play, play };
+    mgh::select_editor_command(draft, conflict_catalog, 0);
+    status = mgh::validate_editor_command(draft, conflict_catalog, 0);
+    CHECK_TRUE(status.state == mgh::GestureEditorCommandState::conflict);
+    CHECK_TRUE(!status.is_selectable());
+    CHECK_TRUE(!status.message.empty());
+
+    mgh::GestureBinding missing{ "D", "main", "Missing", "main_window", "guid-missing" };
+    auto synthetic = make_editor_catalog_entry("Missing", "main", "guid-missing", false);
+    const std::vector<mgh::CatalogEntry> unavailable_catalog = { synthetic };
+    status = mgh::validate_editor_command(missing, unavailable_catalog, 0);
+    CHECK_TRUE(status.state == mgh::GestureEditorCommandState::unavailable);
+    CHECK_TRUE(!status.is_selectable());
+
+    std::vector<mgh::CatalogEntry> synthetic_conflict_catalog = { play, play, play };
+    auto conflict_synthetic = synthetic_conflict_catalog.back();
+    conflict_synthetic.selectable = false;
+    synthetic_conflict_catalog.back() = conflict_synthetic;
+    mgh::GestureBinding conflicting{ "R", "main", "Playback/Play", "main_window", "guid-play" };
+    status = mgh::validate_editor_command(conflicting, synthetic_conflict_catalog, 2);
+    CHECK_TRUE(status.state == mgh::GestureEditorCommandState::conflict);
+    CHECK_TRUE(!status.is_selectable());
+
+    auto context_play = make_editor_catalog_entry("Playback/Play (context)", "context_ui", "guid-play");
+    const std::vector<mgh::CatalogEntry> context_catalog = { context_play };
+    draft = conflicting;
+    const int preserved = mgh::change_editor_group(draft, "context_ui", context_catalog);
+    CHECK_TRUE(preserved == 0);
+    CHECK_TRUE(draft.group == "context_ui");
+    CHECK_TRUE(draft.command_path == "Playback/Play (context)");
+    status = mgh::validate_editor_command(draft, context_catalog, preserved);
+    CHECK_TRUE(status.is_selectable());
+
+    const int cleared = mgh::change_editor_group(draft, "context_ui", { next });
+    CHECK_TRUE(cleared == -1);
+    CHECK_TRUE(draft.command_path.empty());
+    CHECK_TRUE(draft.command_guid.empty());
+    status = mgh::validate_editor_command(draft, { next }, cleared);
+    CHECK_TRUE(status.state == mgh::GestureEditorCommandState::none);
+    CHECK_TRUE(!status.is_selectable());
+
+    draft.group = "main";
+    CHECK_TRUE(mgh::change_editor_group(draft, "main", main_catalog) == -1);
+    CHECK_TRUE(draft.command_path.empty());
+
+    mgh::GestureBinding partial_identity{ "U", "main", "", "main_window" };
+    partial_identity.command_guid = "stale-command";
+    partial_identity.subcommand_guid = "stale-subcommand";
+    partial_identity.node_path = "stale-node";
+    CHECK_TRUE(mgh::change_editor_group(partial_identity, "context_ui", context_catalog) == -1);
+    CHECK_TRUE(partial_identity.group == "context_ui");
+    CHECK_TRUE(partial_identity.command_path.empty());
+    CHECK_TRUE(partial_identity.command_guid.empty());
+    CHECK_TRUE(partial_identity.subcommand_guid.empty());
+    CHECK_TRUE(partial_identity.node_path.empty());
+}
+
+void test_editor_state_and_duplicates() {
+    const mgh::GestureEditorState idle;
+    CHECK_TRUE(idle.mode == mgh::GestureEditorMode::idle);
+    CHECK_TRUE(!idle.dirty);
+
+    auto editor = mgh::make_new_editor_state();
+    CHECK_TRUE(editor.mode == mgh::GestureEditorMode::new_binding);
+    CHECK_TRUE(editor.binding_index == -1);
+    CHECK_TRUE(!editor.dirty);
+    CHECK_TRUE(editor.draft.group == "main");
+    CHECK_TRUE(editor.draft.place == "main_window");
+
+    const auto play = make_editor_catalog_entry("Playback/Play", "main", "guid-play");
+    editor.draft.gesture = "U";
+    mgh::select_editor_command(editor.draft, { play }, 0);
+    mgh::refresh_editor_dirty(editor);
+    CHECK_TRUE(editor.dirty);
+
+    std::vector<mgh::GestureBinding> bindings;
+    CHECK_TRUE(!mgh::has_exact_binding_duplicate(bindings, editor.draft));
+    bindings.push_back(editor.draft);
+    editor = mgh::make_edit_editor_state(bindings.back(), 0);
+    CHECK_TRUE(editor.mode == mgh::GestureEditorMode::edit);
+    CHECK_TRUE(editor.binding_index == 0);
+    CHECK_TRUE(!editor.dirty);
+
+    // Повторный Add видит дубликат; без явного подтверждения размер не меняется.
+    bool confirm_duplicate = false;
+    if (mgh::has_exact_binding_duplicate(bindings, editor.draft) && confirm_duplicate) {
+        bindings.push_back(editor.draft);
+    }
+    CHECK_TRUE(mgh::has_exact_binding_duplicate(bindings, editor.draft));
+    CHECK_TRUE(bindings.size() == 1);
+
+    auto different_command = editor.draft;
+    different_command.command_path = "Playback/Next";
+    CHECK_TRUE(!mgh::has_exact_binding_duplicate(bindings, different_command));
+
+    auto same_user_fields = editor.draft;
+    same_user_fields.command_guid = "other-guid";
+    same_user_fields.node_path = "9.8.7";
+    CHECK_TRUE(mgh::has_exact_binding_duplicate(bindings, same_user_fields));
+
+    editor.draft.gesture = "D";
+    mgh::refresh_editor_dirty(editor);
+    CHECK_TRUE(editor.dirty);
+    mgh::discard_editor_changes(editor);
+    CHECK_TRUE(!editor.dirty);
+    CHECK_TRUE(editor.draft == editor.baseline);
+    CHECK_TRUE(editor.draft.gesture == "U");
+
+    // Явное подтверждение разрешает полный дубликат и переводит редактор в новый Edit.
+    confirm_duplicate = true;
+    if (mgh::has_exact_binding_duplicate(bindings, editor.draft) && confirm_duplicate) {
+        bindings.push_back(editor.draft);
+        editor = mgh::make_edit_editor_state(bindings.back(), 1);
+    }
+    CHECK_TRUE(bindings.size() == 2);
+    CHECK_TRUE(editor.mode == mgh::GestureEditorMode::edit);
+    CHECK_TRUE(editor.binding_index == 1);
+}
+
+void test_editor_guard_decisions() {
+    std::vector<mgh::GestureBinding> bindings = {
+        { "U", "main", "Command/Up", "main_window" },
+        { "D", "main", "Command/Down", "main_window" },
+    };
+
+    auto editor = mgh::make_edit_editor_state(bindings[0], 0);
+    int selected_binding = 0;
+    const auto request_selection = [&](int target) {
+        if (editor.dirty || target < 0 || target >= static_cast<int>(bindings.size())) return false;
+        selected_binding = target;
+        editor = mgh::make_edit_editor_state(bindings[static_cast<std::size_t>(target)], target);
+        return true;
+    };
+
+    editor.draft.gesture = "R";
+    mgh::refresh_editor_dirty(editor);
+    CHECK_TRUE(editor.dirty);
+
+    // Cancel: guard отклоняет переход до изменения selection или редактора.
+    const auto cancelled_editor = editor;
+    CHECK_TRUE(!request_selection(1));
+    CHECK_TRUE(selected_binding == 0);
+    CHECK_TRUE(editor.draft == cancelled_editor.draft);
+    CHECK_TRUE(editor.baseline == cancelled_editor.baseline);
+    CHECK_TRUE(bindings[0].gesture == "U");
+
+    // Save: коммитим именно edit(binding_index), затем тот же переход разрешён.
+    bindings[static_cast<std::size_t>(editor.binding_index)] = editor.draft;
+    editor = mgh::make_edit_editor_state(bindings[0], 0);
+    CHECK_TRUE(request_selection(1));
+    CHECK_TRUE(bindings[0].gesture == "R");
+    CHECK_TRUE(selected_binding == 1);
+    CHECK_TRUE(editor.binding_index == 1);
+    CHECK_TRUE(!editor.dirty);
+
+    // Discard: baseline восстанавливается без записи draft в settings.
+    editor = mgh::make_edit_editor_state(bindings[0], 0);
+    selected_binding = 0;
+    editor.draft.gesture = "L";
+    mgh::refresh_editor_dirty(editor);
+    CHECK_TRUE(!request_selection(1));
+    mgh::discard_editor_changes(editor);
+    CHECK_TRUE(!editor.dirty);
+    CHECK_TRUE(editor.draft.gesture == "R");
+    CHECK_TRUE(bindings[0].gesture == "R");
+    CHECK_TRUE(request_selection(1));
+
+    // Возврат к baseline сам снимает dirty и не требует guard для навигации.
+    editor.draft.gesture = "L";
+    mgh::refresh_editor_dirty(editor);
+    CHECK_TRUE(editor.dirty);
+    editor.draft = editor.baseline;
+    mgh::refresh_editor_dirty(editor);
+    CHECK_TRUE(!editor.dirty);
+}
+
+void test_editor_session_restore() {
+    std::vector<mgh::GestureBinding> bindings = {
+        { "U", "main", "Command/Up", "main_window" },
+        { "D", "main", "Command/Down", "main_window" },
+    };
+
+    auto saved = mgh::make_edit_editor_state(bindings[0], 0);
+    saved.draft.gesture = "R";
+    mgh::refresh_editor_dirty(saved);
+
+    auto restored = mgh::restore_editor_draft(saved, bindings);
+    CHECK_TRUE(restored.mode == mgh::GestureEditorMode::edit);
+    CHECK_TRUE(restored.binding_index == 0);
+    CHECK_TRUE(restored.draft.gesture == "R");
+    CHECK_TRUE(restored.baseline == bindings[0]);
+    CHECK_TRUE(restored.dirty);
+
+    bindings[0].command_path = "Command/Changed elsewhere";
+    restored = mgh::restore_editor_draft(saved, bindings);
+    CHECK_TRUE(restored.mode == mgh::GestureEditorMode::new_binding);
+    CHECK_TRUE(restored.binding_index == -1);
+    CHECK_TRUE(restored.draft.gesture == "R");
+    CHECK_TRUE(restored.dirty);
+    CHECK_TRUE(restored.draft != restored.baseline);
+
+    saved.binding_index = 99;
+    restored = mgh::restore_editor_draft(saved, bindings);
+    CHECK_TRUE(restored.mode == mgh::GestureEditorMode::new_binding);
+    CHECK_TRUE(restored.draft.gesture == "R");
+
+    auto new_draft = mgh::make_new_editor_state();
+    new_draft.draft.gesture = "WU";
+    new_draft.draft.command_path = "Command/Wheel";
+    mgh::refresh_editor_dirty(new_draft);
+    restored = mgh::restore_editor_draft(new_draft, bindings);
+    CHECK_TRUE(restored.mode == mgh::GestureEditorMode::new_binding);
+    CHECK_TRUE(restored.draft == new_draft.draft);
+    CHECK_TRUE(restored.baseline == new_draft.baseline);
+    CHECK_TRUE(restored.dirty);
+
+    const mgh::GestureEditorState idle;
+    CHECK_TRUE(mgh::restore_editor_draft(idle, bindings).mode == mgh::GestureEditorMode::idle);
+    const auto clean = mgh::make_edit_editor_state(bindings[1], 1);
+    CHECK_TRUE(mgh::restore_editor_draft(clean, bindings).mode == mgh::GestureEditorMode::idle);
+}
+
 mgh::BindingSnapshot make_session_snapshot(const std::vector<std::string>& gestures) {
     mgh::GestureSettings settings;
     for (const auto& gesture : gestures) {
@@ -1033,6 +1347,11 @@ int main(int argc, char** argv) {
     test_gesture_list_sort_command_place_and_ties();
     test_gesture_list_sort_view_and_selection();
     test_gesture_list_grouping();
+    test_gesture_list_navigation_and_move_restrictions();
+    test_editor_command_state();
+    test_editor_state_and_duplicates();
+    test_editor_guard_decisions();
+    test_editor_session_restore();
     test_session_idle_drag_and_reconcile();
     test_session_rocker();
     test_session_wheel_and_fractional_delta();
