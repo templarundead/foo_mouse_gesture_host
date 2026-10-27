@@ -20,6 +20,7 @@ namespace {
 constexpr GUID kPreferencesPageGuid = { 0x6f0c4a52, 0x8d31, 0x4c0e, { 0x9b, 0x7e, 0x2a, 0x64, 0x11, 0xd8, 0x3f, 0x10 } };
 constexpr wchar_t kPreferencesPageClass[] = L"foo_mouse_gesture_host_preferences";
 constexpr UINT_PTR kCommandListSubclassId = 0x4d4748;
+constexpr UINT_PTR kHelpButtonSubclassId = 0x4d4749;
 constexpr UINT_PTR kHelpTrackingToolId = 1;
 
 enum ControlId : int {
@@ -915,6 +916,9 @@ private:
     static LRESULT CALLBACK command_list_subclass_proc(HWND hwnd, UINT msg, WPARAM wparam,
                                                        LPARAM lparam, UINT_PTR subclass_id,
                                                        DWORD_PTR ref_data);
+    static LRESULT CALLBACK help_button_subclass_proc(HWND hwnd, UINT msg, WPARAM wparam,
+                                                      LPARAM lparam, UINT_PTR subclass_id,
+                                                      DWORD_PTR ref_data);
     LRESULT window_proc(UINT msg, WPARAM wparam, LPARAM lparam);
 
     static void register_window_class();
@@ -1260,7 +1264,12 @@ void GesturePreferencesInstance::create_children() {
     }
 
     count_label_ = make_static(L"", SS_LEFT | SS_CENTERIMAGE);
-    help_button_ = make_button(L"Help", kIdHelp);
+    // Текст окна остаётся доступным именем Help; видимый маркер рисуется как "?".
+    help_button_ = make_button(L"Help", kIdHelp, BS_OWNERDRAW);
+    if (help_button_ != nullptr) {
+        SetWindowSubclass(help_button_, help_button_subclass_proc, kHelpButtonSubclassId,
+                          reinterpret_cast<DWORD_PTR>(this));
+    }
 
     left_label_ = make_static(L"left", SS_LEFT);
     right_label_ = make_static(L"right", SS_LEFT);
@@ -1395,9 +1404,8 @@ void GesturePreferencesInstance::create_tooltips() {
     // с клавиатуры, не создавая модальное окно внутри preferences instance.
     TOOLINFOW help_tool = {};
     help_tool.cbSize = sizeof(help_tool);
-    // Без TTF_ABSOLUTE контрол сам выбирает положение рядом с заданной точкой
-    // и может сместить справку, чтобы она не ушла за границы экрана.
-    help_tool.uFlags = TTF_TRACK;
+    // Координаты дополнительно ограничиваются клиентской областью страницы.
+    help_tool.uFlags = TTF_TRACK | TTF_ABSOLUTE;
     help_tool.hwnd = hwnd_;
     help_tool.uId = kHelpTrackingToolId;
     help_tool.lpszText = const_cast<wchar_t*>(kPreferencesHelp);
@@ -1406,28 +1414,36 @@ void GesturePreferencesInstance::create_tooltips() {
 }
 
 void GesturePreferencesInstance::hide_tracking_help() {
-    if (tooltip_ != nullptr && IsWindow(tooltip_) && help_visible_) {
-        TOOLINFOW help_tool = {};
-        help_tool.cbSize = sizeof(help_tool);
-        help_tool.hwnd = hwnd_;
-        help_tool.uId = kHelpTrackingToolId;
-        SendMessageW(tooltip_, TTM_TRACKACTIVATE, FALSE, reinterpret_cast<LPARAM>(&help_tool));
+    if (tooltip_ != nullptr && IsWindow(tooltip_)) {
+        if (help_visible_) {
+            TOOLINFOW help_tool = {};
+            help_tool.cbSize = sizeof(help_tool);
+            help_tool.hwnd = hwnd_;
+            help_tool.uId = kHelpTrackingToolId;
+            SendMessageW(tooltip_, TTM_TRACKACTIVATE, FALSE, reinterpret_cast<LPARAM>(&help_tool));
+        }
+        // Заодно закрываем обычный hover tooltip при Esc или клике вне.
+        SendMessageW(tooltip_, TTM_POP, 0, 0);
     }
     help_visible_ = false;
 }
 
 void GesturePreferencesInstance::on_help() {
-    if (tooltip_ == nullptr || help_button_ == nullptr) return;
-    if (help_visible_) {
-        hide_tracking_help();
-        return;
-    }
+    if (tooltip_ == nullptr || help_button_ == nullptr || help_visible_) return;
 
     SendMessageW(tooltip_, TTM_POP, 0, 0);
+    RECT client_rect = {};
+    GetClientRect(hwnd_, &client_rect);
+    int tooltip_width = client_rect.right - client_rect.left - 2 * scale(4);
+    if (tooltip_width > scale(360)) tooltip_width = scale(360);
+    if (tooltip_width > 0) SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, tooltip_width);
+
     RECT button_rect = {};
     GetWindowRect(help_button_, &button_rect);
-    SendMessageW(tooltip_, TTM_TRACKPOSITION, 0,
-                 MAKELPARAM(button_rect.left, button_rect.bottom + scale(4)));
+    const int gap = scale(4);
+    int x = button_rect.left;
+    int y = button_rect.bottom + gap;
+    SendMessageW(tooltip_, TTM_TRACKPOSITION, 0, MAKELPARAM(x, y));
 
     TOOLINFOW help_tool = {};
     help_tool.cbSize = sizeof(help_tool);
@@ -1435,14 +1451,25 @@ void GesturePreferencesInstance::on_help() {
     help_tool.uId = kHelpTrackingToolId;
     SendMessageW(tooltip_, TTM_TRACKACTIVATE, TRUE, reinterpret_cast<LPARAM>(&help_tool));
     help_visible_ = true;
+
+    // После показа размер известен: сперва пытаемся оставить справку под
+    // маркером, затем переносим её выше и ограничиваем клиентской областью.
+    RECT tooltip_rect = {};
+    if (GetWindowRect(tooltip_, &tooltip_rect)) {
+        const int width = tooltip_rect.right - tooltip_rect.left;
+        const int height = tooltip_rect.bottom - tooltip_rect.top;
+        MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&client_rect), 2);
+        if (x + width > client_rect.right) x = client_rect.right - width;
+        if (y + height > client_rect.bottom) y = button_rect.top - height - gap;
+        if (x < client_rect.left) x = client_rect.left;
+        if (y < client_rect.top) y = client_rect.top;
+        SendMessageW(tooltip_, TTM_TRACKPOSITION, 0, MAKELPARAM(x, y));
+    }
 }
 
 void GesturePreferencesInstance::set_tooltips_active(bool active) {
     if (tooltip_ == nullptr || !IsWindow(tooltip_)) return;
-    if (!active) {
-        hide_tracking_help();
-        SendMessageW(tooltip_, TTM_POP, 0, 0);
-    }
+    if (!active) hide_tracking_help();
     SendMessageW(tooltip_, TTM_ACTIVATE, active ? TRUE : FALSE, 0);
 }
 
@@ -1642,7 +1669,7 @@ void GesturePreferencesInstance::layout() {
 
     // Счётчик и Help делят существующую строку, поэтому справка не отнимает
     // дополнительную высоту у таблицы.
-    const int help_width = scale(52);
+    const int help_width = scale(20);
     const int count_width = list_width - help_width - gap;
     MoveWindow(count_label_, margin + scale(6), count_top, count_width, count_height, TRUE);
     MoveWindow(help_button_, width - margin - help_width, count_top,
@@ -1783,6 +1810,13 @@ void GesturePreferencesInstance::apply_theme() {
 
     if (control_brush_ != nullptr) DeleteObject(control_brush_);
     control_brush_ = CreateSolidBrush(dark ? RGB(45, 45, 45) : GetSysColor(COLOR_WINDOW));
+
+    if (tooltip_ != nullptr) {
+        const COLORREF tooltip_background = dark ? RGB(45, 45, 45) : GetSysColor(COLOR_INFOBK);
+        const COLORREF tooltip_text = dark ? RGB(235, 235, 235) : GetSysColor(COLOR_INFOTEXT);
+        SendMessageW(tooltip_, TTM_SETTIPBKCOLOR, tooltip_background, 0);
+        SendMessageW(tooltip_, TTM_SETTIPTEXTCOLOR, tooltip_text, 0);
+    }
 
     apply_list_theme();
 
@@ -2324,6 +2358,43 @@ LRESULT CALLBACK GesturePreferencesInstance::command_list_subclass_proc(
     return DefSubclassProc(hwnd, msg, wparam, lparam);
 }
 
+LRESULT CALLBACK GesturePreferencesInstance::help_button_subclass_proc(
+    HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UINT_PTR subclass_id, DWORD_PTR ref_data) {
+    auto* self = reinterpret_cast<GesturePreferencesInstance*>(ref_data);
+
+    switch (msg) {
+    case WM_SETFOCUS:
+        if (self != nullptr) self->on_help();
+        break;
+    case WM_KILLFOCUS:
+    case WM_MOUSELEAVE:
+        if (self != nullptr) self->hide_tracking_help();
+        break;
+    case WM_MOUSEMOVE: {
+        TRACKMOUSEEVENT tracking = {};
+        tracking.cbSize = sizeof(tracking);
+        tracking.dwFlags = TME_LEAVE;
+        tracking.hwndTrack = hwnd;
+        TrackMouseEvent(&tracking);
+        break;
+    }
+    case WM_KEYDOWN:
+        if (wparam == VK_ESCAPE && self != nullptr && self->help_visible_) {
+            self->hide_tracking_help();
+            return 0;
+        }
+        break;
+    case WM_NCDESTROY:
+        RemoveWindowSubclass(hwnd, help_button_subclass_proc, subclass_id);
+        if (self != nullptr) self->help_button_ = nullptr;
+        break;
+    default:
+        break;
+    }
+
+    return DefSubclassProc(hwnd, msg, wparam, lparam);
+}
+
 // ---------------------------------------------------------------------------
 //  Оконная процедура
 // ---------------------------------------------------------------------------
@@ -2391,6 +2462,54 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
         SetBkColor(dc, RGB(45, 45, 45));
         return reinterpret_cast<LRESULT>(control_brush_);
     }
+
+    case WM_DRAWITEM: {
+        const auto* draw = reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
+        if (draw->CtlType == ODT_BUTTON && draw->CtlID == kIdHelp) {
+            HBRUSH background = (draw->itemState & ODS_SELECTED) != 0 && control_brush_ != nullptr
+                ? control_brush_
+                : background_brush_;
+            if (background == nullptr) background = GetSysColorBrush(COLOR_BTNFACE);
+            FillRect(draw->hDC, &draw->rcItem, background);
+            SetBkMode(draw->hDC, TRANSPARENT);
+            SetTextColor(draw->hDC, (draw->itemState & ODS_DISABLED) != 0
+                ? GetSysColor(COLOR_GRAYTEXT)
+                : text_color_);
+            HGDIOBJ old_font = SelectObject(draw->hDC, font_);
+            RECT marker = draw->rcItem;
+            DrawTextW(draw->hDC, L"?", -1, &marker,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(draw->hDC, old_font);
+            if ((draw->itemState & ODS_FOCUS) != 0) {
+                RECT focus = draw->rcItem;
+                InflateRect(&focus, -scale(2), -scale(2));
+                DrawFocusRect(draw->hDC, &focus);
+            }
+            return TRUE;
+        }
+        break;
+    }
+
+    case WM_PARENTNOTIFY: {
+        const UINT child_message = LOWORD(wparam);
+        if (child_message == WM_LBUTTONDOWN || child_message == WM_RBUTTONDOWN) {
+            const HWND clicked = reinterpret_cast<HWND>(lparam);
+            if (clicked != help_button_) hide_tracking_help();
+        }
+        break;
+    }
+
+    case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+        hide_tracking_help();
+        break;
+
+    case WM_KEYDOWN:
+        if (wparam == VK_ESCAPE && help_visible_) {
+            hide_tracking_help();
+            return 0;
+        }
+        break;
 
     case WM_COMMAND: {
         const int id = LOWORD(wparam);
