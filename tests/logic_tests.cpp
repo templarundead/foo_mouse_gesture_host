@@ -789,6 +789,78 @@ void test_gesture_list_grouping() {
     CHECK_TRUE(mgh::make_gesture_list_view(empty, {}, false).empty());
 }
 
+mgh::CatalogEntry make_editor_catalog_entry(const char* path, const char* group, const char* guid,
+                                             bool selectable = true) {
+    mgh::CatalogEntry entry;
+    entry.path = path;
+    entry.group = group;
+    entry.command_guid = guid;
+    entry.selectable = selectable;
+    return entry;
+}
+
+void test_editor_command_state() {
+    const auto play = make_editor_catalog_entry("Playback/Play", "main", "guid-play");
+    const auto next = make_editor_catalog_entry("Playback/Next", "main", "guid-next");
+    const std::vector<mgh::CatalogEntry> main_catalog = { play, next };
+
+    mgh::GestureBinding draft{ "U", "main", "", "main_window" };
+    auto status = mgh::validate_editor_command(draft, main_catalog, -1);
+    CHECK_TRUE(status.state == mgh::GestureEditorCommandState::none);
+    CHECK_TRUE(!status.is_selectable());
+
+    mgh::select_editor_command(draft, main_catalog, 0);
+    status = mgh::validate_editor_command(draft, main_catalog, 0);
+    CHECK_TRUE(status.state == mgh::GestureEditorCommandState::valid);
+    CHECK_TRUE(status.is_selectable());
+    CHECK_TRUE(draft.command_path == "Playback/Play");
+
+    const std::vector<mgh::CatalogEntry> conflict_catalog = { play, play };
+    mgh::select_editor_command(draft, conflict_catalog, 0);
+    status = mgh::validate_editor_command(draft, conflict_catalog, 0);
+    CHECK_TRUE(status.state == mgh::GestureEditorCommandState::conflict);
+    CHECK_TRUE(!status.is_selectable());
+    CHECK_TRUE(!status.message.empty());
+
+    mgh::GestureBinding missing{ "D", "main", "Missing", "main_window", "guid-missing" };
+    auto synthetic = make_editor_catalog_entry("Missing", "main", "guid-missing", false);
+    const std::vector<mgh::CatalogEntry> unavailable_catalog = { synthetic };
+    status = mgh::validate_editor_command(missing, unavailable_catalog, 0);
+    CHECK_TRUE(status.state == mgh::GestureEditorCommandState::unavailable);
+    CHECK_TRUE(!status.is_selectable());
+
+    std::vector<mgh::CatalogEntry> synthetic_conflict_catalog = { play, play, play };
+    auto conflict_synthetic = synthetic_conflict_catalog.back();
+    conflict_synthetic.selectable = false;
+    synthetic_conflict_catalog.back() = conflict_synthetic;
+    mgh::GestureBinding conflicting{ "R", "main", "Playback/Play", "main_window", "guid-play" };
+    status = mgh::validate_editor_command(conflicting, synthetic_conflict_catalog, 2);
+    CHECK_TRUE(status.state == mgh::GestureEditorCommandState::conflict);
+    CHECK_TRUE(!status.is_selectable());
+
+    auto context_play = make_editor_catalog_entry("Playback/Play (context)", "context_ui", "guid-play");
+    const std::vector<mgh::CatalogEntry> context_catalog = { context_play };
+    draft = conflicting;
+    const int preserved = mgh::change_editor_group(draft, "context_ui", context_catalog);
+    CHECK_TRUE(preserved == 0);
+    CHECK_TRUE(draft.group == "context_ui");
+    CHECK_TRUE(draft.command_path == "Playback/Play (context)");
+    status = mgh::validate_editor_command(draft, context_catalog, preserved);
+    CHECK_TRUE(status.is_selectable());
+
+    const int cleared = mgh::change_editor_group(draft, "context_ui", { next });
+    CHECK_TRUE(cleared == -1);
+    CHECK_TRUE(draft.command_path.empty());
+    CHECK_TRUE(draft.command_guid.empty());
+    status = mgh::validate_editor_command(draft, { next }, cleared);
+    CHECK_TRUE(status.state == mgh::GestureEditorCommandState::none);
+    CHECK_TRUE(!status.is_selectable());
+
+    draft.group = "main";
+    CHECK_TRUE(mgh::change_editor_group(draft, "main", main_catalog) == -1);
+    CHECK_TRUE(draft.command_path.empty());
+}
+
 mgh::BindingSnapshot make_session_snapshot(const std::vector<std::string>& gestures) {
     mgh::GestureSettings settings;
     for (const auto& gesture : gestures) {
@@ -1033,6 +1105,7 @@ int main(int argc, char** argv) {
     test_gesture_list_sort_command_place_and_ties();
     test_gesture_list_sort_view_and_selection();
     test_gesture_list_grouping();
+    test_editor_command_state();
     test_session_idle_drag_and_reconcile();
     test_session_rocker();
     test_session_wheel_and_fractional_delta();

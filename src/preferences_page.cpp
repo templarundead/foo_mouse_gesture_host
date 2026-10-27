@@ -970,8 +970,11 @@ private:
     void refresh_gesture_text();
     void refresh_command_list();
     void update_buttons();
+    void update_command_status();
 
     void on_group_changed();
+    void on_command_changed();
+    void on_place_changed();
     void on_list_selection_changed(int index);
     void on_add();
     void on_update();
@@ -991,6 +994,8 @@ private:
     int current_place_index() const;
     std::string current_group_id() const;
     std::string current_place_id() const;
+    int selected_command_index() const;
+    GestureBinding current_editor_binding() const;
     //! Индекс привязки в settings_.bindings по отображаемой строке ListView
     //! (при включённом group view порядок строк не совпадает с порядком привязок).
     int binding_index_from_display(int display_row) const;
@@ -1014,6 +1019,7 @@ private:
     // --- данные ---
     GestureSettings settings_;
     std::vector<CatalogEntry> catalog_;
+    GestureBinding editor_draft_;
     std::string edit_gesture_;
 
     // --- Win32 ---
@@ -1041,6 +1047,7 @@ private:
     HWND gesture_label_ = nullptr;
     HWND group_label_ = nullptr;
     HWND command_label_ = nullptr;
+    HWND command_status_ = nullptr;
     HWND place_label_ = nullptr;
 
     HWND dir_up_ = nullptr;
@@ -1313,6 +1320,7 @@ void GesturePreferencesInstance::create_children() {
     gesture_label_ = make_static(L"Gesture", SS_LEFT);
     group_label_ = make_static(L"Group", SS_LEFT);
     command_label_ = make_static(L"Command", SS_LEFT);
+    command_status_ = make_static(L"Select command…", SS_LEFT | SS_ENDELLIPSIS);
     place_label_ = make_static(L"Place", SS_LEFT);
 
     dir_up_ = make_button(arrow("\xE2\x86\x91").c_str(), kIdDirUp);
@@ -1673,11 +1681,13 @@ void GesturePreferencesInstance::layout() {
         }
     }
 
-    // --- правая колонка: 4 строки формы + кнопки ---------------------------
+    // --- правая колонка: 4 строки формы + command status + кнопки ----------
     const int row_step = control_height + scale(6);
-    const int right_content_height = 4 * row_step + scale(8) +
-                                     button_rows * control_height + (button_rows - 1) * gap +
-                                     scale(6);
+    const int command_status_height = scale(14);
+    const int command_status_gap = scale(4);
+    const int right_content_height = 4 * row_step + command_status_height + command_status_gap +
+                                     scale(8) + button_rows * control_height +
+                                     (button_rows - 1) * gap + scale(6);
 
     // Возвращаем таблице фактически освобождённую высоту. Если нижнюю область
     // ограничивает левая колонка, её контролы не сжимаются ради формального +hint.
@@ -1816,13 +1826,17 @@ void GesturePreferencesInstance::layout() {
     SetWindowPos(command_combo_, nullptr, editor_x, lower_top + 2 * row_step, editor_width, scale(240),
                  SWP_NOZORDER | SWP_NOACTIVATE);
 
-    MoveWindow(place_label_, form_x, lower_top + 3 * row_step + scale(4), label_width, label_height, TRUE);
-    SetWindowPos(place_combo_, nullptr, editor_x, lower_top + 3 * row_step, editor_width, scale(160),
+    const int command_status_y = lower_top + 3 * row_step;
+    MoveWindow(command_status_, editor_x, command_status_y, editor_width, command_status_height, TRUE);
+
+    const int place_y = command_status_y + command_status_height + command_status_gap;
+    MoveWindow(place_label_, form_x, place_y + scale(4), label_width, label_height, TRUE);
+    SetWindowPos(place_combo_, nullptr, editor_x, place_y, editor_width, scale(160),
                  SWP_NOZORDER | SWP_NOACTIVATE);
 
     // Кнопки управления таблицей. Ширина каждой уже посчитана по тексту
     // (button_widths выше), ряды - жадно по доступной ширине (button_row_of).
-    const int buttons_y = lower_top + 4 * row_step + scale(8);
+    const int buttons_y = place_y + row_step + scale(8);
 
     int row_x[8] = {};
     for (int i = 0; i < button_rows; ++i) row_x[i] = form_x;
@@ -1901,6 +1915,7 @@ void GesturePreferencesInstance::load_from_settings() {
     Button_SetCheck(alphabet_check_, settings_.alphabet ? BST_CHECKED : BST_UNCHECKED);
     Button_SetCheck(first_only_check_, settings_.first_only ? BST_CHECKED : BST_UNCHECKED);
 
+    editor_draft_ = GestureBinding{};
     edit_gesture_.clear();
     refresh_gesture_text();
     refresh_list();
@@ -1999,30 +2014,21 @@ void GesturePreferencesInstance::refresh_command_list() {
     // после каждой из сотен команд главного меню.
     SendMessageW(command_combo_, WM_SETREDRAW, FALSE, 0);
     ComboBox_ResetContent(command_combo_);
-    if (!catalog_.empty()) {
-        std::size_t string_bytes = 0;
-        for (const auto& entry : catalog_) {
-            string_bytes += (entry.path.size() + 1) * sizeof(wchar_t);
-        }
-        SendMessageW(command_combo_, CB_INITSTORAGE, static_cast<WPARAM>(catalog_.size()),
-                     static_cast<LPARAM>(string_bytes));
+    std::size_t string_bytes = 0;
+    for (const auto& entry : catalog_) {
+        string_bytes += (entry.path.size() + 1) * sizeof(wchar_t);
     }
+    SendMessageW(command_combo_, CB_INITSTORAGE, static_cast<WPARAM>(catalog_.size() + 1),
+                 static_cast<LPARAM>(string_bytes));
 
-    if (catalog_.empty()) {
-        // Пустой список - не повод молча не работать кнопке Add New:
-        // показываем причину прямо в выпадающем списке.
-        const wchar_t* placeholder = group_id == "main"
-            ? L"(main menu is not available yet)"
-            : L"(nothing selected - pick tracks first)";
-        ComboBox_AddString(command_combo_, placeholder);
-        ComboBox_SetCurSel(command_combo_, -1);
-    } else {
-        for (const auto& entry : catalog_) {
-            const std::wstring label = wide_from_utf8(entry.path);
-            ComboBox_AddString(command_combo_, label.c_str());
-        }
-        ComboBox_SetCurSel(command_combo_, 0);
+    // Нулевой элемент не является командой. CurSel(-1) оставляет поле пустым,
+    // пока пользователь явно не выберет executable identity.
+    ComboBox_AddString(command_combo_, L"Select command…");
+    for (const auto& entry : catalog_) {
+        const std::wstring label = wide_from_utf8(entry.path);
+        ComboBox_AddString(command_combo_, label.c_str());
     }
+    ComboBox_SetCurSel(command_combo_, -1);
 
     SendMessageW(command_combo_, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(command_combo_, nullptr, TRUE);
@@ -2035,17 +2041,43 @@ void GesturePreferencesInstance::update_buttons() {
     const int selected = selected_row();
     const int count = static_cast<int>(settings_.bindings.size());
     const bool has_selection = selected >= 0 && selected < count;
+    const auto command = validate_editor_command(current_editor_binding(), catalog_, selected_command_index());
+    const bool has_gesture = !editor_gesture().empty();
 
-    const int command_index = command_combo_ != nullptr ? ComboBox_GetCurSel(command_combo_) : -1;
-    const bool has_command = !catalog_.empty() && command_index >= 0 &&
-                             command_index < static_cast<int>(catalog_.size()) &&
-                             catalog_[static_cast<std::size_t>(command_index)].selectable;
-
-    EnableWindow(add_button_, has_command);
-    EnableWindow(update_button_, has_selection && has_command);
+    EnableWindow(add_button_, has_gesture && command.is_selectable());
+    EnableWindow(update_button_, has_selection && has_gesture && command.is_selectable());
     EnableWindow(delete_button_, has_selection);
     EnableWindow(move_up_button_, has_selection && selected > 0);
     EnableWindow(move_down_button_, has_selection && selected + 1 < count);
+    update_command_status();
+}
+
+void GesturePreferencesInstance::update_command_status() {
+    if (command_status_ == nullptr) return;
+
+    const auto status = validate_editor_command(current_editor_binding(), catalog_, selected_command_index());
+    std::wstring text;
+    switch (status.state) {
+    case GestureEditorCommandState::valid:
+        text = L"Command selected explicitly.";
+        break;
+    case GestureEditorCommandState::unavailable:
+        text = L"[unavailable] " + wide_from_utf8(status.message);
+        break;
+    case GestureEditorCommandState::conflict:
+        text = L"[conflict] " + wide_from_utf8(status.message);
+        break;
+    case GestureEditorCommandState::none:
+        if (catalog_.empty()) {
+            text = current_group_id() == "main"
+                ? L"Select command… — main menu is not available yet."
+                : L"Select command… — no context commands; select tracks first.";
+        } else {
+            text = L"Select command…";
+        }
+        break;
+    }
+    SetWindowTextW(command_status_, text.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -2055,6 +2087,21 @@ void GesturePreferencesInstance::update_buttons() {
 void GesturePreferencesInstance::on_group_changed() {
     if (updating_) return;
     refresh_command_list();
+    const int command_index = change_editor_group(editor_draft_, current_group_id(), catalog_);
+    ComboBox_SetCurSel(command_combo_, command_index < 0 ? -1 : command_index + 1);
+    update_buttons();
+}
+
+void GesturePreferencesInstance::on_command_changed() {
+    if (updating_) return;
+    select_editor_command(editor_draft_, catalog_, selected_command_index());
+    update_buttons();
+}
+
+void GesturePreferencesInstance::on_place_changed() {
+    if (updating_) return;
+    editor_draft_.place = current_place_id();
+    update_buttons();
 }
 
 void GesturePreferencesInstance::on_list_selection_changed(int binding_index) {
@@ -2064,6 +2111,7 @@ void GesturePreferencesInstance::on_list_selection_changed(int binding_index) {
     const int index = binding_index;
 
     const GestureBinding& binding = settings_.bindings[static_cast<std::size_t>(index)];
+    editor_draft_ = binding;
 
     updating_ = true;
 
@@ -2104,7 +2152,7 @@ void GesturePreferencesInstance::on_list_selection_changed(int binding_index) {
                                  << "\" -> \"" << binding.command_path.c_str() << "\" is " << status
                                  << ": " << match.message.c_str();
     }
-    ComboBox_SetCurSel(command_combo_, command_index);
+    ComboBox_SetCurSel(command_combo_, command_index < 0 ? -1 : command_index + 1);
 
     int place_index = 0;
     const auto& places = command_places();
@@ -2135,30 +2183,14 @@ void GesturePreferencesInstance::on_add() {
     // пробуем ещё раз, прежде чем отказывать пользователю.
     if (catalog_.empty()) refresh_command_list();
 
-    int command_index = ComboBox_GetCurSel(command_combo_);
-    if (command_index < 0 && !catalog_.empty()) command_index = 0;
-
-    if (catalog_.empty() || command_index >= static_cast<int>(catalog_.size())) {
-        MessageBoxW(hwnd_,
-                    L"No command is selected.\n\n"
-                    L"For context(...) groups, select tracks in the playlist so the command "
-                    L"list can be built, or choose the \"main menu\" group.",
+    GestureBinding binding = current_editor_binding();
+    const auto command = validate_editor_command(binding, catalog_, selected_command_index());
+    if (!command.is_selectable()) {
+        MessageBoxW(hwnd_, L"Select an available, non-conflicting command explicitly.",
                     L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
         return;
     }
-
-    const CatalogEntry& selected_entry = catalog_[static_cast<std::size_t>(command_index)];
-    if (!selected_entry.selectable) {
-        MessageBoxW(hwnd_, L"The selected command is unavailable or conflicting. Choose a valid command.",
-                    L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
-        return;
-    }
-
-    GestureBinding binding;
-    binding.gesture = gesture;
-    binding.group = current_group_id();
-    assign_command_identity(binding, selected_entry);
-    binding.place = current_place_id();
+    select_editor_command(binding, catalog_, command.catalog_index);
 
     settings_.bindings.push_back(binding);
     refresh_list();
@@ -2185,25 +2217,14 @@ void GesturePreferencesInstance::on_update() {
         return;
     }
 
-    const int command_index = ComboBox_GetCurSel(command_combo_);
-    if (catalog_.empty() || command_index < 0 || command_index >= static_cast<int>(catalog_.size())) {
-        MessageBoxW(hwnd_, L"Select a command to update the binding.",
+    GestureBinding binding = current_editor_binding();
+    const auto command = validate_editor_command(binding, catalog_, selected_command_index());
+    if (!command.is_selectable()) {
+        MessageBoxW(hwnd_, L"Select an available, non-conflicting command explicitly.",
                     L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
         return;
     }
-
-    const CatalogEntry& selected_entry = catalog_[static_cast<std::size_t>(command_index)];
-    if (!selected_entry.selectable) {
-        MessageBoxW(hwnd_, L"The selected command is unavailable or conflicting. Choose a valid command.",
-                    L"Mouse Gesture Host", MB_OK | MB_ICONINFORMATION);
-        return;
-    }
-
-    GestureBinding binding;
-    binding.gesture = gesture;
-    binding.group = current_group_id();
-    assign_command_identity(binding, selected_entry);
-    binding.place = current_place_id();
+    select_editor_command(binding, catalog_, command.catalog_index);
 
     settings_.bindings[static_cast<std::size_t>(index)] = binding;
     refresh_list();
@@ -2257,6 +2278,7 @@ void GesturePreferencesInstance::on_direction(Token token) {
     tokens.push_back(token);
     edit_gesture_ = join_tokens(tokens);
     refresh_gesture_text();
+    update_buttons();
 }
 
 void GesturePreferencesInstance::on_backspace() {
@@ -2266,6 +2288,7 @@ void GesturePreferencesInstance::on_backspace() {
     if (!tokens.empty()) tokens.pop_back();
     edit_gesture_ = join_tokens(tokens);
     refresh_gesture_text();
+    update_buttons();
 }
 
 std::vector<Token> GesturePreferencesInstance::editor_tokens() const {
@@ -2315,6 +2338,20 @@ std::string GesturePreferencesInstance::current_place_id() const {
     const int index = current_place_index();
     if (index >= 0 && index < static_cast<int>(places.size())) return places[static_cast<std::size_t>(index)].first;
     return "main_window";
+}
+
+int GesturePreferencesInstance::selected_command_index() const {
+    if (command_combo_ == nullptr) return -1;
+    const int combo_index = ComboBox_GetCurSel(command_combo_);
+    return combo_index > 0 ? combo_index - 1 : -1;
+}
+
+GestureBinding GesturePreferencesInstance::current_editor_binding() const {
+    GestureBinding binding = editor_draft_;
+    binding.gesture = editor_gesture();
+    binding.group = current_group_id();
+    binding.place = current_place_id();
+    return binding;
 }
 
 int GesturePreferencesInstance::binding_index_from_display(int display_row) const {
@@ -2569,6 +2606,8 @@ LRESULT GesturePreferencesInstance::window_proc(UINT msg, WPARAM wparam, LPARAM 
         case kIdRockerLeftRight: if (code == BN_CLICKED) on_direction(Token::rocker_left_right); return 0;
 
         case kIdGroupCombo: if (code == CBN_SELCHANGE) on_group_changed(); return 0;
+        case kIdCommandCombo: if (code == CBN_SELCHANGE) on_command_changed(); return 0;
+        case kIdPlaceCombo: if (code == CBN_SELCHANGE) on_place_changed(); return 0;
 
         case kIdAdd: if (code == BN_CLICKED) on_add(); return 0;
         case kIdUpdate: if (code == BN_CLICKED) on_update(); return 0;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "gesture_config.h"
+#include "command_identity.h"
 
 namespace mgh {
 
@@ -60,5 +60,34 @@ std::vector<GestureListRow> make_gesture_list_view(const std::vector<GestureList
                                                    bool group_by_category = false);
 
 int gesture_row_for_binding(const std::vector<GestureListRow>& rows, int binding_index);
+
+enum class GestureEditorCommandState : std::uint8_t {
+    none,
+    valid,
+    unavailable,
+    conflict,
+};
+
+struct GestureEditorCommandStatus {
+    GestureEditorCommandState state = GestureEditorCommandState::none;
+    int catalog_index = -1;
+    std::string message = "Select command...";
+
+    bool is_selectable() const { return state == GestureEditorCommandState::valid && catalog_index >= 0; }
+};
+
+//! Обновляет только draft; индекс -1 означает явно пустой выбор команды.
+void select_editor_command(GestureBinding& draft, const std::vector<CatalogEntry>& catalog,
+                           int catalog_index);
+
+//! После смены группы сохраняет identity только при однозначном совпадении.
+//! Возвращает индекс команды в catalog либо -1; первый элемент не выбирается.
+int change_editor_group(GestureBinding& draft, const std::string& group_id,
+                        const std::vector<CatalogEntry>& catalog);
+
+//! Единые правила Add/Update: synthetic/conflict/unavailable строки не executable.
+GestureEditorCommandStatus validate_editor_command(const GestureBinding& draft,
+                                                    const std::vector<CatalogEntry>& catalog,
+                                                    int catalog_index);
 
 } // namespace mgh

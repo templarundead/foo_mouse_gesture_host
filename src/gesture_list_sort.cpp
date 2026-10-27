@@ -42,6 +42,28 @@ int compare_text(const std::wstring& left, const std::wstring& right) {
 #endif
 }
 
+void clear_command_identity(GestureBinding& binding) {
+    binding.command_path.clear();
+    binding.command_guid.clear();
+    binding.subcommand_guid.clear();
+    binding.node_path.clear();
+}
+
+bool same_catalog_entry(const CatalogEntry& left, const CatalogEntry& right) {
+    return left.path == right.path && left.group == right.group &&
+           left.command_guid == right.command_guid && left.subcommand_guid == right.subcommand_guid &&
+           left.node_path == right.node_path;
+}
+
+std::vector<CatalogEntry> selectable_entries(const std::vector<CatalogEntry>& catalog) {
+    std::vector<CatalogEntry> result;
+    result.reserve(catalog.size());
+    for (const auto& entry : catalog) {
+        if (entry.selectable) result.push_back(entry);
+    }
+    return result;
+}
+
 } // namespace
 
 void prepare_gesture_list_row(GestureListRow& row, const GestureBinding& binding) {
@@ -154,6 +176,83 @@ int gesture_row_for_binding(const std::vector<GestureListRow>& rows, int binding
         if (rows[i].binding_index == binding_index) return static_cast<int>(i);
     }
     return -1;
+}
+
+void select_editor_command(GestureBinding& draft, const std::vector<CatalogEntry>& catalog,
+                           int catalog_index) {
+    if (catalog_index < 0 || catalog_index >= static_cast<int>(catalog.size())) {
+        clear_command_identity(draft);
+        return;
+    }
+
+    const auto& entry = catalog[static_cast<std::size_t>(catalog_index)];
+    draft.group = entry.group;
+    assign_command_identity(draft, entry);
+}
+
+int change_editor_group(GestureBinding& draft, const std::string& group_id,
+                        const std::vector<CatalogEntry>& catalog) {
+    draft.group = group_id;
+    if (draft.command_path.empty()) return -1;
+
+    const CommandMatch match = resolve_command(draft, catalog);
+    if (match.status != CommandResolution::found) {
+        clear_command_identity(draft);
+        return -1;
+    }
+
+    const auto& entry = catalog[match.index];
+    if (!entry.selectable) {
+        clear_command_identity(draft);
+        return -1;
+    }
+    assign_command_identity(draft, entry);
+    return static_cast<int>(match.index);
+}
+
+GestureEditorCommandStatus validate_editor_command(const GestureBinding& draft,
+                                                    const std::vector<CatalogEntry>& catalog,
+                                                    int catalog_index) {
+    GestureEditorCommandStatus status;
+    status.catalog_index = catalog_index;
+    if (catalog_index < 0 || catalog_index >= static_cast<int>(catalog.size())) {
+        status.message = "Select command...";
+        return status;
+    }
+
+    const auto& selected = catalog[static_cast<std::size_t>(catalog_index)];
+    const auto real_entries = selectable_entries(catalog);
+    const CommandMatch match = resolve_command(draft, real_entries);
+
+    if (!selected.selectable) {
+        status.state = match.status == CommandResolution::ambiguous
+            ? GestureEditorCommandState::conflict
+            : GestureEditorCommandState::unavailable;
+        status.message = match.message.empty()
+            ? "Saved command requires explicit reselection."
+            : match.message;
+        return status;
+    }
+
+    if (match.status == CommandResolution::ambiguous) {
+        status.state = GestureEditorCommandState::conflict;
+        status.message = match.message;
+        return status;
+    }
+    if (match.status != CommandResolution::found) {
+        status.state = GestureEditorCommandState::unavailable;
+        status.message = match.message.empty() ? "Command is unavailable." : match.message;
+        return status;
+    }
+    if (!same_catalog_entry(selected, real_entries[match.index])) {
+        status.state = GestureEditorCommandState::conflict;
+        status.message = "Selected row does not resolve to the same command identity.";
+        return status;
+    }
+
+    status.state = GestureEditorCommandState::valid;
+    status.message.clear();
+    return status;
 }
 
 } // namespace mgh
