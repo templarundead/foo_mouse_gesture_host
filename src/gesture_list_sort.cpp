@@ -64,6 +64,32 @@ std::vector<CatalogEntry> selectable_entries(const std::vector<CatalogEntry>& ca
     return result;
 }
 
+int first_binding_row(const std::vector<GestureListRow>& rows) {
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        if (!rows[static_cast<std::size_t>(i)].is_header) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+int last_binding_row(const std::vector<GestureListRow>& rows) {
+    for (std::size_t i = rows.size(); i > 0; --i) {
+        if (!rows[i - 1].is_header) return static_cast<int>(i - 1);
+    }
+    return -1;
+}
+
+int adjacent_binding_row(const std::vector<GestureListRow>& rows, int current_row, int direction) {
+    const int count = static_cast<int>(rows.size());
+    if (count == 0) return -1;
+    if (current_row < 0) return first_binding_row(rows);
+    if (current_row >= count) return direction < 0 ? last_binding_row(rows) : -1;
+
+    for (int row = current_row + direction; row >= 0 && row < count; row += direction) {
+        if (!rows[static_cast<std::size_t>(row)].is_header) return row;
+    }
+    return rows[static_cast<std::size_t>(current_row)].is_header ? -1 : current_row;
+}
+
 } // namespace
 
 void prepare_gesture_list_row(GestureListRow& row, const GestureBinding& binding) {
@@ -176,6 +202,60 @@ int gesture_row_for_binding(const std::vector<GestureListRow>& rows, int binding
         if (rows[i].binding_index == binding_index) return static_cast<int>(i);
     }
     return -1;
+}
+
+int gesture_navigation_row(const std::vector<GestureListRow>& rows, int current_row,
+                           GestureRowNavigation navigation, int page_rows) {
+    switch (navigation) {
+    case GestureRowNavigation::first:
+        return first_binding_row(rows);
+    case GestureRowNavigation::last:
+        return last_binding_row(rows);
+    case GestureRowNavigation::previous:
+        return adjacent_binding_row(rows, current_row, -1);
+    case GestureRowNavigation::next:
+        return adjacent_binding_row(rows, current_row, 1);
+    case GestureRowNavigation::page_previous:
+    case GestureRowNavigation::page_next:
+        break;
+    }
+
+    const int direction = navigation == GestureRowNavigation::page_previous ? -1 : 1;
+    int target = current_row;
+    int steps = page_rows > 0 ? page_rows : 1;
+    if (target < 0 || target >= static_cast<int>(rows.size()) ||
+        rows[static_cast<std::size_t>(target)].is_header) {
+        target = adjacent_binding_row(rows, target, direction);
+        if (target < 0) return -1;
+        --steps;
+    }
+
+    for (int step = 0; step < steps; ++step) {
+        const int next = adjacent_binding_row(rows, target, direction);
+        if (next < 0 || next == target) break;
+        target = next;
+    }
+    return target;
+}
+
+bool can_move_gesture_bindings(GestureSortState sort, bool group_by_category) {
+    return sort.column == GestureSortColumn::none && !group_by_category;
+}
+
+bool move_gesture_binding(std::vector<GestureBinding>& bindings, int binding_index, int delta,
+                          GestureSortState sort, bool group_by_category) {
+    if (!can_move_gesture_bindings(sort, group_by_category) || (delta != -1 && delta != 1)) {
+        return false;
+    }
+
+    const int count = static_cast<int>(bindings.size());
+    if (binding_index < 0 || binding_index >= count) return false;
+    const int target = binding_index + delta;
+    if (target < 0 || target >= count) return false;
+
+    std::swap(bindings[static_cast<std::size_t>(binding_index)],
+              bindings[static_cast<std::size_t>(target)]);
+    return true;
 }
 
 GestureEditorState make_new_editor_state(const std::string& group_id, const std::string& place_id) {

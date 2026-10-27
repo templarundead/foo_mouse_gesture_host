@@ -922,28 +922,19 @@ LRESULT GestureListControl::window_proc(UINT msg, WPARAM wparam, LPARAM lparam) 
     }
 
     case WM_KEYDOWN: {
-        const int page_rows = 5;
+        const auto navigate = [this](GestureRowNavigation navigation) {
+            if (rows_ == nullptr) return;
+            const int target = gesture_navigation_row(*rows_, selected_, navigation);
+            if (target >= 0) select_row(target, true);
+        };
+
         switch (wparam) {
-        case VK_UP: select_row(selected_ > 0 ? selected_ - 1 : 0, true); break;
-        case VK_DOWN:
-            if (rows_ != nullptr && selected_ + 1 < static_cast<int>(rows_->size())) {
-                select_row(selected_ + 1, true);
-            }
-            break;
-        case VK_PRIOR:
-            for (int i = 0; i < page_rows; ++i) select_row(selected_ - 1, false);
-            if (rows_ != nullptr) select_row(selected_, true);
-            break;
-        case VK_NEXT: {
-            if (rows_ == nullptr) break;
-            for (int i = 0; i < page_rows; ++i) select_row(selected_ + 1, false);
-            select_row(selected_, true);
-            break;
-        }
-        case VK_HOME: select_row(0, true); break;
-        case VK_END:
-            if (rows_ != nullptr) select_row(static_cast<int>(rows_->size()) - 1, true);
-            break;
+        case VK_UP: navigate(GestureRowNavigation::previous); break;
+        case VK_DOWN: navigate(GestureRowNavigation::next); break;
+        case VK_PRIOR: navigate(GestureRowNavigation::page_previous); break;
+        case VK_NEXT: navigate(GestureRowNavigation::page_next); break;
+        case VK_HOME: navigate(GestureRowNavigation::first); break;
+        case VK_END: navigate(GestureRowNavigation::last); break;
         default: break;
         }
 
@@ -1512,8 +1503,8 @@ void GesturePreferencesInstance::create_tooltips() {
     add_tooltip(discard_button_, L"Discard: restore the baseline, then perform the pending action.");
     add_tooltip(cancel_button_, L"Cancel: keep the current row and unsaved draft.");
     add_tooltip(delete_button_, L"Delete: remove the selected binding.");
-    add_tooltip(move_up_button_, L"Up: move the selected binding earlier in manual order.");
-    add_tooltip(move_down_button_, L"Down: move the selected binding later in manual order.");
+    add_tooltip(move_up_button_, L"Up: move earlier in flat Manual order; disabled in sorted or grouped views.");
+    add_tooltip(move_down_button_, L"Down: move later in flat Manual order; disabled in sorted or grouped views.");
     add_tooltip(group_by_category_check_,
                 L"Group by category: show one header per category; disable for a flat list with category chips. This view option does not change execution order.");
     add_tooltip(help_button_, kPreferencesHelp);
@@ -2197,11 +2188,12 @@ void GesturePreferencesInstance::update_buttons() {
                                  selected == editor_.binding_index;
 
     const bool valid_draft = has_gesture && command.is_selectable();
+    const bool can_move = can_move_gesture_bindings(list_control_.sort_state(), group_by_category_);
     EnableWindow(add_button_, valid_draft);
     EnableWindow(update_button_, has_edit_target && editor_.dirty && valid_draft);
     EnableWindow(delete_button_, has_selection);
-    EnableWindow(move_up_button_, has_selection && selected > 0);
-    EnableWindow(move_down_button_, has_selection && selected + 1 < count);
+    EnableWindow(move_up_button_, can_move && has_selection && selected > 0);
+    EnableWindow(move_down_button_, can_move && has_selection && selected + 1 < count);
     EnableWindow(save_button_, editor_.dirty && valid_draft);
     EnableWindow(discard_button_, editor_.dirty);
     EnableWindow(cancel_button_, pending_action_.type != EditorActionType::none);
@@ -2508,25 +2500,16 @@ void GesturePreferencesInstance::on_delete() {
 
 void GesturePreferencesInstance::on_move(int delta) {
     if (updating_) return;
+    const GestureSortState sort = list_control_.sort_state();
+    if (!can_move_gesture_bindings(sort, group_by_category_)) return;
     if (editor_.dirty) {
         request_editor_action({ EditorActionType::move, -1, delta });
         return;
     }
 
     const int index = selected_row();
-    const int count = static_cast<int>(settings_.bindings.size());
+    if (!move_gesture_binding(settings_.bindings, index, delta, sort, group_by_category_)) return;
     const int target = index + delta;
-
-    if (index < 0 || index >= count || target < 0 || target >= count) return;
-
-    if (list_control_.sort_state().column != GestureSortColumn::none) {
-        list_control_.set_sort_state({});
-        refresh_list();
-        select_binding(index);
-    }
-
-    std::swap(settings_.bindings[static_cast<std::size_t>(index)],
-              settings_.bindings[static_cast<std::size_t>(target)]);
     set_dirty(true);
 
     refresh_list();

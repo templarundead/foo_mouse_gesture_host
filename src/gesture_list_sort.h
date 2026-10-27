@@ -61,6 +61,24 @@ std::vector<GestureListRow> make_gesture_list_view(const std::vector<GestureList
 
 int gesture_row_for_binding(const std::vector<GestureListRow>& rows, int binding_index);
 
+enum class GestureRowNavigation : std::uint8_t {
+    first,
+    last,
+    previous,
+    next,
+    page_previous,
+    page_next,
+};
+
+//! Возвращает display row, пропуская headers; binding_index строк не меняется.
+int gesture_navigation_row(const std::vector<GestureListRow>& rows, int current_row,
+                           GestureRowNavigation navigation, int page_rows = 5);
+
+//! Перестановка разрешена только там, где display order совпадает с Manual order.
+bool can_move_gesture_bindings(GestureSortState sort, bool group_by_category);
+bool move_gesture_binding(std::vector<GestureBinding>& bindings, int binding_index, int delta,
+                          GestureSortState sort, bool group_by_category);
+
 enum class GestureEditorMode : std::uint8_t {
     idle,
     new_binding,

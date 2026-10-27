@@ -789,6 +789,72 @@ void test_gesture_list_grouping() {
     CHECK_TRUE(mgh::make_gesture_list_view(empty, {}, false).empty());
 }
 
+void test_gesture_list_navigation_and_move_restrictions() {
+    const std::vector<mgh::GestureBinding> bindings = {
+        { "U", "main", "Command/Up", "main_window" },
+        { "WU", "main", "Command/Wheel up", "playlist" },
+        { "D", "main", "Command/Down", "main_window" },
+        { "R+L", "main", "Command/Rocker", "now_playing" },
+        { "WD", "main", "Command/Wheel down", "playlist" },
+    };
+    const auto manual = make_sort_rows(bindings);
+    const auto grouped = mgh::make_gesture_list_view(manual, {}, true);
+
+    const int first = mgh::gesture_navigation_row(grouped, 4, mgh::GestureRowNavigation::first);
+    const int last = mgh::gesture_navigation_row(grouped, 4, mgh::GestureRowNavigation::last);
+    CHECK_TRUE(first == 1);
+    CHECK_TRUE(last == 8);
+    CHECK_TRUE(grouped[static_cast<std::size_t>(first)].binding_index == 0);
+    CHECK_TRUE(grouped[static_cast<std::size_t>(last)].binding_index == 3);
+
+    // Down/Up пересекают header, но сохраняют физический binding_index.
+    const int down = mgh::gesture_navigation_row(grouped, 2, mgh::GestureRowNavigation::next);
+    const int up = mgh::gesture_navigation_row(grouped, down, mgh::GestureRowNavigation::previous);
+    CHECK_TRUE(down == 4);
+    CHECK_TRUE(up == 2);
+    CHECK_TRUE(grouped[static_cast<std::size_t>(down)].binding_index == 1);
+    CHECK_TRUE(grouped[static_cast<std::size_t>(up)].binding_index == 2);
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, last, mgh::GestureRowNavigation::next) == last);
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, first, mgh::GestureRowNavigation::previous) == first);
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, -1, mgh::GestureRowNavigation::next) == first);
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, -1, mgh::GestureRowNavigation::previous) == first);
+
+    // Headers не расходуют шаги PageUp/PageDown.
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, first, mgh::GestureRowNavigation::page_next, 2) == 4);
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, last, mgh::GestureRowNavigation::page_previous, 2) == 4);
+    CHECK_TRUE(mgh::gesture_navigation_row(grouped, -1, mgh::GestureRowNavigation::page_next, 1) == first);
+
+    mgh::GestureListRow header;
+    header.is_header = true;
+    const std::vector<mgh::GestureListRow> headers_only = { header, header };
+    const std::vector<mgh::GestureListRow> empty;
+    for (const auto* rows : { &headers_only, &empty }) {
+        CHECK_TRUE(mgh::gesture_navigation_row(*rows, -1, mgh::GestureRowNavigation::first) == -1);
+        CHECK_TRUE(mgh::gesture_navigation_row(*rows, -1, mgh::GestureRowNavigation::last) == -1);
+        CHECK_TRUE(mgh::gesture_navigation_row(*rows, -1, mgh::GestureRowNavigation::next) == -1);
+        CHECK_TRUE(mgh::gesture_navigation_row(*rows, -1, mgh::GestureRowNavigation::page_next) == -1);
+    }
+
+    const mgh::GestureSortState sorted = {
+        mgh::GestureSortColumn::gesture, mgh::GestureSortDirection::ascending
+    };
+    CHECK_TRUE(mgh::can_move_gesture_bindings({}, false));
+    CHECK_TRUE(!mgh::can_move_gesture_bindings({}, true));
+    CHECK_TRUE(!mgh::can_move_gesture_bindings(sorted, false));
+    CHECK_TRUE(!mgh::can_move_gesture_bindings(sorted, true));
+
+    auto moved = bindings;
+    CHECK_TRUE(mgh::move_gesture_binding(moved, 0, 1, {}, false));
+    CHECK_TRUE(moved[0].gesture == "WU");
+    CHECK_TRUE(moved[1].gesture == "U");
+    const auto after_move = moved;
+    CHECK_TRUE(!mgh::move_gesture_binding(moved, 0, -1, {}, false));
+    CHECK_TRUE(!mgh::move_gesture_binding(moved, static_cast<int>(moved.size()) - 1, 1, {}, false));
+    CHECK_TRUE(!mgh::move_gesture_binding(moved, 0, 1, sorted, false));
+    CHECK_TRUE(!mgh::move_gesture_binding(moved, 0, 1, {}, true));
+    CHECK_TRUE(moved == after_move);
+}
+
 mgh::CatalogEntry make_editor_catalog_entry(const char* path, const char* group, const char* guid,
                                              bool selectable = true) {
     mgh::CatalogEntry entry;
@@ -1224,6 +1290,7 @@ int main(int argc, char** argv) {
     test_gesture_list_sort_command_place_and_ties();
     test_gesture_list_sort_view_and_selection();
     test_gesture_list_grouping();
+    test_gesture_list_navigation_and_move_restrictions();
     test_editor_command_state();
     test_editor_state_and_duplicates();
     test_editor_guard_decisions();
