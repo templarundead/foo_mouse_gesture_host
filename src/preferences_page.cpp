@@ -1395,7 +1395,7 @@ void GesturePreferencesInstance::create_children() {
     place_combo_ = make_combo(kIdPlaceCombo);
     install_command_list_scroll_handler();
 
-    new_button_ = make_button(L"New", kIdNew);
+    new_button_ = make_button(L"Clear", kIdNew);
     add_button_ = make_button(L"Add New", kIdAdd);
     update_button_ = make_button(L"Update", kIdUpdate);
     delete_button_ = make_button(L"Delete", kIdDelete);
@@ -1486,7 +1486,7 @@ void GesturePreferencesInstance::create_tooltips() {
     add_tooltip(command_combo_, L"Command: choose the command bound to the gesture.");
     add_tooltip(place_combo_, L"Place: choose the execution context for the command.");
 
-    add_tooltip(new_button_, L"New: clear the editor after resolving any unsaved changes.");
+    add_tooltip(new_button_, L"Clear: clear the editor after resolving any unsaved changes.");
     add_tooltip(add_button_, L"Add New: stage a new binding on this page; Apply saves the page settings.");
     add_tooltip(update_button_, L"Update: stage changes to the selected binding; Apply saves the page settings.");
     add_tooltip(delete_button_, L"Delete: remove the selected binding.");
@@ -1698,7 +1698,7 @@ void GesturePreferencesInstance::layout() {
 
     constexpr int kButtonCount = 6;
     const ButtonSpec button_specs[kButtonCount] = {
-        { new_button_, L"New", 60 },
+        { new_button_, L"Clear", 60 },
         { add_button_, L"Add New", 96 },
         { update_button_, L"Update", 72 },
         { delete_button_, L"Delete", 72 },

@@ -273,8 +273,8 @@ void test_config_roundtrip_and_migration() {
     const std::vector<GestureBinding> expected_defaults = {
         { "L", "main", "Playback/Previous", "main_window" },
         { "R", "main", "Playback/Next", "main_window" },
-        { "U", "main", "Playback/Volume up", "main_window" },
-        { "D", "main", "Playback/Volume down", "main_window" },
+        { "U", "main", "Playback/Volume/Up", "main_window" },
+        { "D", "main", "Playback/Volume/Down", "main_window" },
     };
     CHECK_TRUE(defaults.bindings == expected_defaults);
 }

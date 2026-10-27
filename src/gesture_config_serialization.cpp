@@ -222,8 +222,8 @@ GestureSettings GestureConfig::defaults() {
     settings.bindings = {
         { "L", "main", "Playback/Previous", "main_window" },
         { "R", "main", "Playback/Next", "main_window" },
-        { "U", "main", "Playback/Volume up", "main_window" },
-        { "D", "main", "Playback/Volume down", "main_window" },
+        { "U", "main", "Playback/Volume/Up", "main_window" },
+        { "D", "main", "Playback/Volume/Down", "main_window" },
     };
     return settings;
 }
