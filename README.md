@@ -420,8 +420,8 @@ Disable и Apply без перезапуска. CI подтверждает сб
 
 ```powershell
 # поднимите версию в src/component_version.h (MGH_COMPONENT_VERSION)
-git tag v1.3.1
-git push origin v1.3.1
+git tag v1.3.2
+git push origin v1.3.2
 ```
 
 ### Необязательная ручная подпись выпуска
