@@ -361,6 +361,9 @@ void GestureEngine::drain_main_queue() {
 }
 
 void GestureEngine::process_mouse_queue() {
+    // Разрешаем следующему событию поставить wake-up уже во время drain.
+    mouse_process_posted_ = false;
+
     QueuedMouseEvent event;
     while (mouse_queue_.pop(event)) {
         for (std::size_t i = 0; i < event.result.action_count; ++i) {
@@ -373,7 +376,6 @@ void GestureEngine::process_mouse_queue() {
         post_log("Mouse Gesture Host: dropped " + std::to_string(delta) +
                  " low-level mouse event(s); total " + std::to_string(reported_mouse_drops_));
     }
-    mouse_process_posted_ = false;
 }
 
 void GestureEngine::process_action(const SessionAction& action) {
@@ -476,7 +478,7 @@ void GestureEngine::health_check() {
 
     const bool left_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
     const bool right_down = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-    SessionResult reconciled = session_.reconcile_buttons(left_down, right_down, *worker_snapshot_);
+    SessionResult reconciled = session_.reconcile_left_button(left_down, *worker_snapshot_);
     for (std::size_t i = 0; i < reconciled.action_count; ++i) {
         process_action(reconciled.actions[i]);
     }
@@ -543,9 +545,15 @@ LRESULT CALLBACK GestureEngine::mouse_hook_proc(int code, WPARAM wparam, LPARAM 
                     queued.result = result;
                     queued.droppable = (wparam == WM_MOUSEMOVE);
                     if (engine.mouse_queue_.push(queued)) {
-                        if (!engine.mouse_process_posted_ &&
-                            PostMessageW(engine.worker_sink_, kMsgProcessMouse, 0, 0)) {
-                            engine.mouse_process_posted_ = true;
+                        // У критического события всегда есть собственный wake-up:
+                        // RUp не должен ждать health timer из-за старого posted-флага.
+                        const bool needs_wakeup = !queued.droppable || !engine.mouse_process_posted_;
+                        if (needs_wakeup) {
+                            if (PostMessageW(engine.worker_sink_, kMsgProcessMouse, 0, 0)) {
+                                engine.mouse_process_posted_ = true;
+                            } else {
+                                engine.mouse_process_posted_ = false;
+                            }
                         }
                         if (result.swallow) return 1;
                     } else if (!queued.droppable) {

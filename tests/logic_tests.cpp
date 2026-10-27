@@ -1159,10 +1159,10 @@ void test_session_idle_drag_and_reconcile() {
     CHECK_TRUE(!result.actions[0].was_tap);
 
     session.handle_event(session_event(mgh::SessionEventKind::right_down), bindings);
-    result = session.reconcile_buttons(false, false, bindings);
-    CHECK_TRUE(result.action_count == 1);
-    CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::finish);
-    CHECK_TRUE(session.state() == mgh::GestureSessionState::idle);
+    result = session.reconcile_left_button(false, bindings);
+    CHECK_TRUE(result.action_count == 0);
+    CHECK_TRUE(session.state() == mgh::GestureSessionState::right_down);
+    session.reset();
 }
 
 void test_session_rocker() {

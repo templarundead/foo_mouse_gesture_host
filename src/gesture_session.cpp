@@ -204,14 +204,9 @@ SessionResult GestureSession::handle_wheel_notch(bool up, const BindingSnapshot&
     return result;
 }
 
-SessionResult GestureSession::reconcile_buttons(bool left_down, bool right_down,
-                                                const BindingSnapshot& bindings) {
-    if (right_down_ && !right_down) {
-        SessionEvent event;
-        event.kind = SessionEventKind::right_up;
-        event.point = right_down_point_;
-        return handle_event(event, bindings);
-    }
+SessionResult GestureSession::reconcile_left_button(bool left_down,
+                                                    const BindingSnapshot& bindings) {
+    // right_up приходит только из hook: таймер не должен открывать меню во время удержания.
     if (left_down_ && !left_down) {
         SessionEvent event;
         event.kind = SessionEventKind::left_up;

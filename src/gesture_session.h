@@ -66,8 +66,7 @@ struct SessionResult {
 class GestureSession {
 public:
     SessionResult handle_event(const SessionEvent& event, const BindingSnapshot& bindings);
-    SessionResult reconcile_buttons(bool left_down, bool right_down,
-                                    const BindingSnapshot& bindings);
+    SessionResult reconcile_left_button(bool left_down, const BindingSnapshot& bindings);
     void reset();
 
     GestureSessionState state() const;
