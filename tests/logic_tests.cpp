@@ -923,6 +923,63 @@ void test_editor_state_and_duplicates() {
     CHECK_TRUE(editor.binding_index == 1);
 }
 
+void test_editor_guard_decisions() {
+    std::vector<mgh::GestureBinding> bindings = {
+        { "U", "main", "Command/Up", "main_window" },
+        { "D", "main", "Command/Down", "main_window" },
+    };
+
+    auto editor = mgh::make_edit_editor_state(bindings[0], 0);
+    int selected_binding = 0;
+    const auto request_selection = [&](int target) {
+        if (editor.dirty || target < 0 || target >= static_cast<int>(bindings.size())) return false;
+        selected_binding = target;
+        editor = mgh::make_edit_editor_state(bindings[static_cast<std::size_t>(target)], target);
+        return true;
+    };
+
+    editor.draft.gesture = "R";
+    mgh::refresh_editor_dirty(editor);
+    CHECK_TRUE(editor.dirty);
+
+    // Cancel: guard отклоняет переход до изменения selection или редактора.
+    const auto cancelled_editor = editor;
+    CHECK_TRUE(!request_selection(1));
+    CHECK_TRUE(selected_binding == 0);
+    CHECK_TRUE(editor.draft == cancelled_editor.draft);
+    CHECK_TRUE(editor.baseline == cancelled_editor.baseline);
+    CHECK_TRUE(bindings[0].gesture == "U");
+
+    // Save: коммитим именно edit(binding_index), затем тот же переход разрешён.
+    bindings[static_cast<std::size_t>(editor.binding_index)] = editor.draft;
+    editor = mgh::make_edit_editor_state(bindings[0], 0);
+    CHECK_TRUE(request_selection(1));
+    CHECK_TRUE(bindings[0].gesture == "R");
+    CHECK_TRUE(selected_binding == 1);
+    CHECK_TRUE(editor.binding_index == 1);
+    CHECK_TRUE(!editor.dirty);
+
+    // Discard: baseline восстанавливается без записи draft в settings.
+    editor = mgh::make_edit_editor_state(bindings[0], 0);
+    selected_binding = 0;
+    editor.draft.gesture = "L";
+    mgh::refresh_editor_dirty(editor);
+    CHECK_TRUE(!request_selection(1));
+    mgh::discard_editor_changes(editor);
+    CHECK_TRUE(!editor.dirty);
+    CHECK_TRUE(editor.draft.gesture == "R");
+    CHECK_TRUE(bindings[0].gesture == "R");
+    CHECK_TRUE(request_selection(1));
+
+    // Возврат к baseline сам снимает dirty и не требует guard для навигации.
+    editor.draft.gesture = "L";
+    mgh::refresh_editor_dirty(editor);
+    CHECK_TRUE(editor.dirty);
+    editor.draft = editor.baseline;
+    mgh::refresh_editor_dirty(editor);
+    CHECK_TRUE(!editor.dirty);
+}
+
 mgh::BindingSnapshot make_session_snapshot(const std::vector<std::string>& gestures) {
     mgh::GestureSettings settings;
     for (const auto& gesture : gestures) {
@@ -1169,6 +1226,7 @@ int main(int argc, char** argv) {
     test_gesture_list_grouping();
     test_editor_command_state();
     test_editor_state_and_duplicates();
+    test_editor_guard_decisions();
     test_session_idle_drag_and_reconcile();
     test_session_rocker();
     test_session_wheel_and_fractional_delta();
