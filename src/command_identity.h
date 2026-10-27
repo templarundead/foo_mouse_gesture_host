@@ -79,31 +79,41 @@ CommandMatch resolve_command(const GestureBinding& binding, const Range& entries
         return result;
     }
 
-    if (!binding.node_path.empty()) {
-        for (std::size_t i = 0; i < entries.size(); ++i) {
-            const auto& entry = entries[i];
-            if (entry.group == binding.group && entry.node_path == binding.node_path) {
-                matches.push_back(i);
-            }
-        }
-        if (finish(CommandResolution::ambiguous)) {
-            const auto& entry = entries[result.index];
-            if (entry.path != binding.command_path) {
-                result.status = CommandResolution::unavailable;
-                result.message = "structural key now points to a different command label";
-            }
-        }
-        return result;
-    }
-
-    // Legacy v1/v2 без identity: только единственный полный путь, никогда не leaf.
+    // Полный путь не зависит от вставки/удаления пунктов динамического меню.
     for (std::size_t i = 0; i < entries.size(); ++i) {
         const auto& entry = entries[i];
         if (entry.group == binding.group && entry.path == binding.command_path) {
             matches.push_back(i);
         }
     }
-    finish(CommandResolution::ambiguous);
+
+    // При одинаковых полных путях node_path остаётся дополнительным ключом.
+    if (matches.size() > 1 && !binding.node_path.empty()) {
+        std::vector<std::size_t> structural_matches;
+        for (const std::size_t index : matches) {
+            if (entries[index].node_path == binding.node_path) {
+                structural_matches.push_back(index);
+            }
+        }
+        // Без совпадения сохраняем исходный набор: это conflict, а не отсутствие команды.
+        if (!structural_matches.empty()) matches = std::move(structural_matches);
+    }
+    if (!matches.empty() || binding.node_path.empty()) {
+        finish(CommandResolution::ambiguous);
+        return result;
+    }
+
+    // Полного пути нет: старая позиция нужна только для прежней диагностики.
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        const auto& entry = entries[i];
+        if (entry.group == binding.group && entry.node_path == binding.node_path) {
+            matches.push_back(i);
+        }
+    }
+    if (finish(CommandResolution::ambiguous)) {
+        result.status = CommandResolution::unavailable;
+        result.message = "structural key now points to a different command label";
+    }
     return result;
 }
 

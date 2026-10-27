@@ -350,6 +350,21 @@ void test_command_identity_resolution() {
     binding.command_path = "Playback/Wrong label";
     match = mgh::resolve_command(binding, entries);
     CHECK_TRUE(match.status == mgh::CommandResolution::unavailable);
+    CHECK_TRUE(match.message == "structural key now points to a different command label");
+
+    // Динамическое меню переместило нужную команду, а старую позицию занял другой пункт.
+    auto moved_entries = entries;
+    std::swap(moved_entries[0].node_path, moved_entries[1].node_path);
+    binding = mgh::GestureBinding("WU", "main", "Playback/Renamed", "main_window", "", "", "0.1");
+    match = mgh::resolve_command(binding, moved_entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::found);
+    CHECK_TRUE(match.index == 0);
+
+    // Исчезнувшая старая позиция также не делает существующий полный путь unavailable.
+    binding.node_path = "9.9";
+    match = mgh::resolve_command(binding, moved_entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::found);
+    CHECK_TRUE(match.index == 0);
 
     binding = mgh::GestureBinding("R", "main", "Playback/Renamed", "main_window");
     match = mgh::resolve_command(binding, entries);
@@ -363,6 +378,15 @@ void test_command_identity_resolution() {
     entries[1].command_guid.clear();
     entries[0].command_guid.clear();
     binding = mgh::GestureBinding("R", "main", entries[0].path, "main_window");
+    match = mgh::resolve_command(binding, entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::ambiguous);
+
+    // node_path разрешает дубликат полного пути, но не скрывает конфликт при устаревании.
+    binding.node_path = entries[1].node_path;
+    match = mgh::resolve_command(binding, entries);
+    CHECK_TRUE(match.status == mgh::CommandResolution::found);
+    CHECK_TRUE(match.index == 1);
+    binding.node_path = "9.9";
     match = mgh::resolve_command(binding, entries);
     CHECK_TRUE(match.status == mgh::CommandResolution::ambiguous);
 
