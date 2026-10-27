@@ -313,7 +313,10 @@ void select_editor_command(GestureBinding& draft, const std::vector<CatalogEntry
 int change_editor_group(GestureBinding& draft, const std::string& group_id,
                         const std::vector<CatalogEntry>& catalog) {
     draft.group = group_id;
-    if (draft.command_path.empty()) return -1;
+    if (draft.command_path.empty()) {
+        clear_command_identity(draft);
+        return -1;
+    }
 
     const CommandMatch match = resolve_command(draft, catalog);
     if (match.status != CommandResolution::found) {

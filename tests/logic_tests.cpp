@@ -925,6 +925,17 @@ void test_editor_command_state() {
     draft.group = "main";
     CHECK_TRUE(mgh::change_editor_group(draft, "main", main_catalog) == -1);
     CHECK_TRUE(draft.command_path.empty());
+
+    mgh::GestureBinding partial_identity{ "U", "main", "", "main_window" };
+    partial_identity.command_guid = "stale-command";
+    partial_identity.subcommand_guid = "stale-subcommand";
+    partial_identity.node_path = "stale-node";
+    CHECK_TRUE(mgh::change_editor_group(partial_identity, "context_ui", context_catalog) == -1);
+    CHECK_TRUE(partial_identity.group == "context_ui");
+    CHECK_TRUE(partial_identity.command_path.empty());
+    CHECK_TRUE(partial_identity.command_guid.empty());
+    CHECK_TRUE(partial_identity.subcommand_guid.empty());
+    CHECK_TRUE(partial_identity.node_path.empty());
 }
 
 void test_editor_state_and_duplicates() {

@@ -998,7 +998,7 @@ private:
     void update_buttons();
     void update_command_status();
     void on_editor_changed();
-    void sync_page_dirty();
+    void sync_page_dirty(bool force_notify = false);
 
     void request_editor_action(const EditorPendingAction& action);
     void execute_editor_action(const EditorPendingAction& action);
@@ -2270,7 +2270,7 @@ void GesturePreferencesInstance::on_editor_changed() {
     if (updating_) return;
     refresh_editor_dirty(editor_);
     if (!editor_.dirty) pending_action_ = {};
-    sync_page_dirty();
+    sync_page_dirty(true);
     update_buttons();
 }
 
@@ -2562,9 +2562,9 @@ void GesturePreferencesInstance::set_dirty(bool dirty) {
     sync_page_dirty();
 }
 
-void GesturePreferencesInstance::sync_page_dirty() {
+void GesturePreferencesInstance::sync_page_dirty(bool force_notify) {
     const bool combined_dirty = committed_dirty_ || editor_.dirty;
-    if (dirty_ == combined_dirty && notified_editor_busy_ == editor_.dirty) return;
+    if (!force_notify && dirty_ == combined_dirty && notified_editor_busy_ == editor_.dirty) return;
 
     dirty_ = combined_dirty;
     notified_editor_busy_ = editor_.dirty;
