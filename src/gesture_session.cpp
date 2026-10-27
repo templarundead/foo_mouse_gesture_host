@@ -113,7 +113,7 @@ SessionResult GestureSession::handle_event(const SessionEvent& event,
     }
 
     case SessionEventKind::mouse_move: {
-        if (right_down_ && session_from_right_ && !rocker_armed_) {
+        if (tracks_mouse_move()) {
             SessionAction action;
             action.kind = SessionActionKind::move;
             action.point = event.point;

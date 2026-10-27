@@ -1183,17 +1183,25 @@ void test_session_idle_drag_and_reconcile() {
     const auto bindings = make_session_snapshot({});
     mgh::GestureSession session;
     CHECK_TRUE(session.state() == mgh::GestureSessionState::idle);
+    CHECK_TRUE(!session.tracks_mouse_move());
 
-    auto result = session.handle_event(session_event(mgh::SessionEventKind::right_down, 100, 100, false), bindings);
+    auto result = session.handle_event(session_event(mgh::SessionEventKind::mouse_move), bindings);
+    CHECK_TRUE(!result.swallow);
+    CHECK_TRUE(result.action_count == 0);
+    CHECK_TRUE(!session.tracks_mouse_move());
+
+    result = session.handle_event(session_event(mgh::SessionEventKind::right_down, 100, 100, false), bindings);
     CHECK_TRUE(!result.swallow);
     CHECK_TRUE(result.action_count == 0);
     CHECK_TRUE(session.state() == mgh::GestureSessionState::idle);
+    CHECK_TRUE(!session.tracks_mouse_move());
 
     result = session.handle_event(session_event(mgh::SessionEventKind::right_down), bindings);
     CHECK_TRUE(result.swallow);
     CHECK_TRUE(result.action_count == 1);
     CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::begin);
     CHECK_TRUE(session.state() == mgh::GestureSessionState::right_down);
+    CHECK_TRUE(session.tracks_mouse_move());
 
     result = session.handle_event(session_event(mgh::SessionEventKind::mouse_move, 102, 100), bindings);
     CHECK_TRUE(!result.swallow);
@@ -1209,6 +1217,7 @@ void test_session_idle_drag_and_reconcile() {
     CHECK_TRUE(result.actions[0].was_suppressed);
     CHECK_TRUE(result.actions[0].right_down_point.x == 100);
     CHECK_TRUE(session.state() == mgh::GestureSessionState::idle);
+    CHECK_TRUE(!session.tracks_mouse_move());
 
     session.handle_event(session_event(mgh::SessionEventKind::right_down), bindings);
     session.handle_event(session_event(mgh::SessionEventKind::mouse_move, 140, 100), bindings);
@@ -1221,6 +1230,7 @@ void test_session_idle_drag_and_reconcile() {
     CHECK_TRUE(result.action_count == 0);
     CHECK_TRUE(session.state() == mgh::GestureSessionState::right_down);
     session.reset();
+    CHECK_TRUE(!session.tracks_mouse_move());
 }
 
 void test_session_rocker() {
@@ -1230,13 +1240,16 @@ void test_session_rocker() {
     auto result = session.handle_event(session_event(mgh::SessionEventKind::left_down, 110, 100), bindings);
     CHECK_TRUE(result.swallow);
     CHECK_TRUE(session.state() == mgh::GestureSessionState::rocker_right_left);
+    CHECK_TRUE(!session.tracks_mouse_move());
     result = session.handle_event(session_event(mgh::SessionEventKind::left_up, 110, 100), bindings);
     CHECK_TRUE(result.swallow);
     CHECK_TRUE(result.action_count == 1);
     CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::emit_rocker);
     CHECK_TRUE(result.actions[0].rocker_token == mgh::Token::rocker_right_left);
+    CHECK_TRUE(session.tracks_mouse_move());
     result = session.handle_event(session_event(mgh::SessionEventKind::right_up), bindings);
     CHECK_TRUE(result.actions[0].kind == mgh::SessionActionKind::finish);
+    CHECK_TRUE(!session.tracks_mouse_move());
 
     session.reset();
     result = session.handle_event(session_event(mgh::SessionEventKind::left_down), bindings);
@@ -1245,6 +1258,7 @@ void test_session_rocker() {
     CHECK_TRUE(result.swallow);
     CHECK_TRUE(result.action_count == 0);
     CHECK_TRUE(session.state() == mgh::GestureSessionState::rocker_left_right);
+    CHECK_TRUE(!session.tracks_mouse_move());
     result = session.handle_event(session_event(mgh::SessionEventKind::right_up), bindings);
     CHECK_TRUE(result.swallow);
     CHECK_TRUE(result.action_count == 1);

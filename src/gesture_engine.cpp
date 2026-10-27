@@ -536,7 +536,9 @@ LRESULT CALLBACK GestureEngine::mouse_hook_proc(int code, WPARAM wparam, LPARAM 
         GestureEngine& engine = instance();
         if (info != nullptr && info->dwExtraInfo != kOwnMouseMarker) {
             engine.health_.note_event(GetTickCount64());
-            if (!engine.worker_snapshot_->settings().disabled) {
+            // Пустые move не накапливаются перед RUp и не будят worker без необходимости.
+            if (!engine.worker_snapshot_->settings().disabled &&
+                (wparam != WM_MOUSEMOVE || engine.session_.tracks_mouse_move())) {
                 SessionEvent event;
                 if (make_session_event(wparam, *info, engine.main_window_, event)) {
                     const GestureSession previous = engine.session_;

@@ -70,6 +70,9 @@ public:
     void reset();
 
     GestureSessionState state() const;
+    bool tracks_mouse_move() const {
+        return right_down_ && session_from_right_ && !rocker_armed_;
+    }
     bool right_moved() const { return right_moved_; }
     int wheel_accumulator() const { return wheel_accum_; }
 
